@@ -3,7 +3,7 @@
  * Plugin Name: Brink Multimedia SMTP
  * Plugin URI: https://www.brink-multimedia.nl
  * Description: Brink Multimedia SMTP Sender for Wordpress inclusief Microsoft OAuth en uitgebreide server logging.
- * Version: 2.2
+ * Version: 2.3
  * Author: Brink Multimedia
  * Author URI: https://www.brink-multimedia.nl
  * Requires at least: 5.8
