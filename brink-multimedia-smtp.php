@@ -3,7 +3,7 @@
  * Plugin Name: Brink Multimedia SMTP
  * Plugin URI: https://www.brink-multimedia.nl
  * Description: Brink Multimedia SMTP Sender voor WordPress inclusief Microsoft-, Google- en SendGrid-koppeling en logging.
- * Version: 3.0
+ * Version: 3.1
  * Author: Brink Multimedia
  * Author URI: https://www.brink-multimedia.nl
  * Requires at least: 5.9
@@ -16,7 +16,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
-define( 'BRINK_SMTP_VERSION', '3.0' );
+define( 'BRINK_SMTP_VERSION', '3.1' );
 
 // Globale variabele om server communicatie op te vangen (alleen gevuld als debug-modus aan staat)
 global $brink_smtp_global_debug;
@@ -261,7 +261,13 @@ function mijn_smtp_check_expiry_notice() {
     }
     $opties = get_option( 'mijn_smtp_options', array() );
     if ( ! empty( $opties['methode'] ) && $opties['methode'] === 'microsoft' && ! empty( $opties['ms_secret_expiry'] ) ) {
-        $expiry = strtotime( $opties['ms_secret_expiry'] );
+        // v3.1 - bugfix: dezelfde tijdzone gebruiken als de rest van de plugin, i.p.v.
+        // de kale strtotime() die de PHP-servertijdzone aanhield (kon een dag schelen).
+        try {
+            $expiry = ( new DateTime( $opties['ms_secret_expiry'], wp_timezone() ) )->getTimestamp();
+        } catch ( Exception $e ) {
+            return;
+        }
         $now = current_time( 'timestamp' );
         $diff = $expiry - $now;
         $days = floor( $diff / DAY_IN_SECONDS );
@@ -357,16 +363,27 @@ function mijn_smtp_menu() {
     );
 }
 
+/**
+ * v3.1 - bugfix: gebruikte voorheen strtotime() zonder tijdzone, wat de PHP-
+ * servertijdzone aanhoudt in plaats van de tijdzone die in WordPress is ingesteld
+ * (Instellingen > Algemeen). Op een server met een andere tijdzone dan de site kwam
+ * het rapport daardoor op een ander lokaal tijdstip binnen dan de "08:00" suggereert.
+ */
 function mijn_smtp_bepaal_volgende_rapport_tijd( $interval ) {
+    $nu = new DateTime( 'now', wp_timezone() );
     switch ( $interval ) {
         case 'daily':
-            return strtotime( 'tomorrow 08:00:00' );
+            $doel = ( clone $nu )->modify( 'tomorrow' )->setTime( 8, 0, 0 );
+            break;
         case 'monthly':
-            return strtotime( 'first day of next month 08:00:00' );
+            $doel = ( clone $nu )->modify( 'first day of next month' )->setTime( 8, 0, 0 );
+            break;
         case 'weekly':
         default:
-            return strtotime( 'next monday 08:00:00' );
+            $doel = ( clone $nu )->modify( 'next monday' )->setTime( 8, 0, 0 );
+            break;
     }
+    return $doel->getTimestamp();
 }
 
 register_activation_hook( __FILE__, 'mijn_smtp_activeer_plugin' );
@@ -409,6 +426,8 @@ function mijn_smtp_uninstall() {
     delete_transient( 'mijn_smtp_last_log_id' );
     delete_transient( 'mijn_smtp_ms_token_error' );
     delete_transient( 'mijn_smtp_google_token_error' );
+    delete_transient( 'mijn_smtp_ms_access_token_cache' );
+    delete_transient( 'mijn_smtp_google_access_token_cache' );
     delete_transient( 'brink_smtp_github_release_cache' );
 }
 
@@ -1182,11 +1201,11 @@ function mijn_smtp_verwerk_mail_log( $args ) {
     if ( $drempel > 0 && $dag_teller > $drempel && ! get_transient( 'mijn_smtp_volume_waarschuwing_verstuurd' ) ) {
         set_transient( 'mijn_smtp_volume_waarschuwing_verstuurd', 1, DAY_IN_SECONDS );
         set_transient( 'mijn_smtp_volume_waarschuwing_actief', $dag_teller, DAY_IN_SECONDS );
-        wp_mail(
-            get_option( 'admin_email' ),
-            'Ongebruikelijk hoog e-mailvolume - ' . get_bloginfo( 'name' ),
-            "Er zijn vandaag al {$dag_teller} e-mails verzonden via Brink Multimedia SMTP, meer dan de ingestelde drempel van {$drempel}.\n\nDit kan wijzen op misbruik van je website. Controleer het logboek in het dashboard."
-        );
+        // v3.1 - bugfix: niet meer direct wp_mail() aanroepen vanuit deze 'wp_mail'-filter
+        // zelf (dat telde de waarschuwingsmail zelf weer mee en kon bij een mislukte
+        // verzending van de waarschuwing onnodig extra fouten in het logboek zetten).
+        // In plaats daarvan één keer uitgesteld via cron.
+        wp_schedule_single_event( time() + 1, 'mijn_smtp_volume_alert_event', array( $dag_teller, $drempel ) );
     }
 
     $logs = get_option( 'mijn_smtp_email_logs', array() );
@@ -1227,13 +1246,23 @@ function mijn_smtp_markeer_log_mislukt( $error ) {
         set_transient( 'mijn_smtp_server_onbereikbaar_waarschuwing', $fouten, DAY_IN_SECONDS );
     }
 
+    // v3.1 - bugfix: de specifieke OAuth-foutmelding (bijv. "invalid_grant") werd tot nu
+    // toe alleen getoond bij een hándmatige testmail, niet in het permanente logboek —
+    // daar stond voor stille (achtergrond-)mails alleen de generieke PHPMailer-melding
+    // ("Could not authenticate"). Nu wordt de specifieke reden, indien bekend, toegevoegd.
+    $foutmelding = $error->get_error_message();
+    $oauth_fout = get_transient( 'mijn_smtp_ms_token_error' ) ?: get_transient( 'mijn_smtp_google_token_error' );
+    if ( $oauth_fout ) {
+        $foutmelding .= ' (OAuth: ' . $oauth_fout . ')';
+    }
+
     $last_id = get_transient( 'mijn_smtp_last_log_id' );
     if ( $last_id ) {
         $logs = get_option( 'mijn_smtp_email_logs', array() );
         foreach ( $logs as &$log ) {
             if ( $log['id'] === $last_id ) {
                 $log['status']     = 'failed';
-                $log['error']      = $error->get_error_message();
+                $log['error']      = $foutmelding;
                 $log['server_log'] = $brink_smtp_global_debug;
                 break;
             }
@@ -1263,10 +1292,30 @@ function mijn_smtp_verstuur_wekelijks_rapport() {
 }
 
 /**
+ * v3.1: losse, uitgestelde afhandeling van de volumewaarschuwing-mail (zie de bugfix-
+ * toelichting bij mijn_smtp_verwerk_mail_log hierboven).
+ */
+add_action( 'mijn_smtp_volume_alert_event', 'mijn_smtp_verstuur_volume_alert', 10, 2 );
+function mijn_smtp_verstuur_volume_alert( $aantal, $drempel ) {
+    wp_mail(
+        get_option( 'admin_email' ),
+        'Ongebruikelijk hoog e-mailvolume - ' . get_bloginfo( 'name' ),
+        "Er zijn vandaag al {$aantal} e-mails verzonden via Brink Multimedia SMTP, meer dan de ingestelde drempel van {$drempel}.\n\nDit kan wijzen op misbruik van je website. Controleer het logboek in het dashboard."
+    );
+}
+
+/**
  * 8. DE MOTOR: koppel instellingen aan de e-mailfunctie
  */
 
 function mijn_smtp_get_ms_access_token() {
+    // v3.1 - bugfix: hergebruik een eerder opgehaald token zolang het geldig is,
+    // i.p.v. bij ELKE verzonden mail een nieuw netwerkverzoek naar Microsoft te doen.
+    $gecached = get_transient( 'mijn_smtp_ms_access_token_cache' );
+    if ( $gecached ) {
+        return $gecached;
+    }
+
     $opties = get_option( 'mijn_smtp_options', array() );
     if ( empty( $opties['ms_refresh_token'] ) || empty( $opties['ms_client_id'] ) || empty( $opties['ms_client_secret'] ) ) {
         return false;
@@ -1295,6 +1344,8 @@ function mijn_smtp_get_ms_access_token() {
                 $opties['ms_refresh_token'] = $data['refresh_token'];
                 update_option( 'mijn_smtp_options', $opties, false );
             }
+            $levensduur = isset( $data['expires_in'] ) ? max( 60, (int) $data['expires_in'] - 120 ) : 3300;
+            set_transient( 'mijn_smtp_ms_access_token_cache', $data['access_token'], $levensduur );
             return $data['access_token'];
         }
     }
@@ -1303,8 +1354,14 @@ function mijn_smtp_get_ms_access_token() {
 
 /**
  * v3.0 - suggestie #1: Google access token ophalen via refresh token.
+ * v3.1: ook hier het token cachen (zie bugfix-toelichting bij de Microsoft-variant).
  */
 function mijn_smtp_get_google_access_token() {
+    $gecached = get_transient( 'mijn_smtp_google_access_token_cache' );
+    if ( $gecached ) {
+        return $gecached;
+    }
+
     $opties = get_option( 'mijn_smtp_options', array() );
     if ( empty( $opties['google_refresh_token'] ) || empty( $opties['google_client_id'] ) || empty( $opties['google_client_secret'] ) ) {
         return false;
@@ -1328,6 +1385,8 @@ function mijn_smtp_get_google_access_token() {
         }
         if ( isset( $data['access_token'] ) ) {
             // Let op: Google geeft bij een refresh_token-grant meestal geen nieuwe refresh_token terug.
+            $levensduur = isset( $data['expires_in'] ) ? max( 60, (int) $data['expires_in'] - 120 ) : 3300;
+            set_transient( 'mijn_smtp_google_access_token_cache', $data['access_token'], $levensduur );
             return $data['access_token'];
         }
     }
@@ -1556,6 +1615,11 @@ function mijn_smtp_verstuur_via_sendgrid( $atts ) {
 
     $code = wp_remote_retrieve_response_code( $response );
     if ( $code >= 200 && $code < 300 ) {
+        // v3.1 - bugfix: WordPress core vuurt 'wp_mail_succeeded' normaal automatisch af
+        // ná phpmailer->send(), maar dat pad wordt hier volledig overgeslagen (SendGrid
+        // loopt buiten PHPMailer om). Zonder dit bleef de "opeenvolgende fouten"-teller
+        // bij gebruik van SendGrid voorgoed hangen, ook nadat verzending weer werkte.
+        do_action( 'wp_mail_succeeded', $atts );
         return true;
     }
 
