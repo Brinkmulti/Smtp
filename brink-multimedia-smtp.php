@@ -3,7 +3,7 @@
  * Plugin Name: Brink Multimedia SMTP
  * Plugin URI: https://www.brink-multimedia.nl
  * Description: Brink Multimedia SMTP Sender voor WordPress inclusief Microsoft-, Google- en SendGrid-koppeling en logging.
- * Version: 3.1.1
+ * Version: 4.0
  * Author: Brink Multimedia
  * Author URI: https://www.brink-multimedia.nl
  * Requires at least: 5.9
@@ -16,7 +16,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
-define( 'BRINK_SMTP_VERSION', '3.0' );
+define( 'BRINK_SMTP_VERSION', '4.0' );
 
 // Globale variabele om server communicatie op te vangen (alleen gevuld als debug-modus aan staat)
 global $brink_smtp_global_debug;
@@ -252,6 +252,60 @@ function mijn_smtp_dashboard_widget_render() {
 }
 
 /**
+ * FEATURE (v3.2 - suggestie #16): snelkoppeling in de WordPress-adminbalk om direct
+ * een testmail naar je eigen e-mailadres te sturen, zonder eerst naar de
+ * instellingenpagina te hoeven navigeren.
+ */
+add_action( 'admin_bar_menu', 'mijn_smtp_admin_bar_snelkoppeling', 100 );
+function mijn_smtp_admin_bar_snelkoppeling( $admin_bar ) {
+    if ( ! current_user_can( 'manage_options' ) ) {
+        return;
+    }
+    $admin_bar->add_node( array(
+        'id'    => 'mijn-smtp-testmail',
+        'title' => '✉️ Test SMTP',
+        'href'  => wp_nonce_url( admin_url( 'admin-post.php?action=mijn_smtp_snelle_testmail' ), 'mijn_smtp_snelle_testmail' ),
+        'meta'  => array( 'title' => 'Verstuur direct een testmail naar jezelf' ),
+    ) );
+}
+
+add_action( 'admin_post_mijn_smtp_snelle_testmail', 'mijn_smtp_verwerk_snelle_testmail' );
+function mijn_smtp_verwerk_snelle_testmail() {
+    if ( ! current_user_can( 'manage_options' ) ) {
+        wp_die( 'Onvoldoende rechten.' );
+    }
+    check_admin_referer( 'mijn_smtp_snelle_testmail' );
+
+    $gebruiker = wp_get_current_user();
+    $verzonden = wp_mail( $gebruiker->user_email, 'Test E-mail via Brink SMTP (snelkoppeling)', 'Gefeliciteerd! Als je dit leest, werkt de koppeling.' );
+
+    set_transient( 'mijn_smtp_snelle_testmail_resultaat_' . get_current_user_id(), $verzonden ? 'success' : 'failed', 60 );
+
+    $referer = wp_get_referer();
+    $doel = ( $referer && strpos( $referer, admin_url() ) === 0 ) ? $referer : admin_url( 'options-general.php?page=mijn-smtp-instellingen' );
+    wp_safe_redirect( $doel );
+    exit;
+}
+
+add_action( 'admin_notices', 'mijn_smtp_toon_snelle_testmail_resultaat' );
+function mijn_smtp_toon_snelle_testmail_resultaat() {
+    if ( ! current_user_can( 'manage_options' ) ) {
+        return;
+    }
+    $sleutel = 'mijn_smtp_snelle_testmail_resultaat_' . get_current_user_id();
+    $resultaat = get_transient( $sleutel );
+    if ( ! $resultaat ) {
+        return;
+    }
+    delete_transient( $sleutel );
+    if ( 'success' === $resultaat ) {
+        echo '<div class="notice notice-success is-dismissible"><p>✅ Testmail (via de adminbalk-snelkoppeling) succesvol verzonden naar je eigen e-mailadres.</p></div>';
+    } else {
+        echo '<div class="notice notice-error is-dismissible"><p>❌ Testmail via de adminbalk-snelkoppeling is mislukt. Bekijk het logboek voor details.</p></div>';
+    }
+}
+
+/**
  * FEATURE 3: Microsoft Token Expiry Warning
  */
 add_action( 'admin_notices', 'mijn_smtp_check_expiry_notice' );
@@ -261,7 +315,13 @@ function mijn_smtp_check_expiry_notice() {
     }
     $opties = get_option( 'mijn_smtp_options', array() );
     if ( ! empty( $opties['methode'] ) && $opties['methode'] === 'microsoft' && ! empty( $opties['ms_secret_expiry'] ) ) {
-        $expiry = strtotime( $opties['ms_secret_expiry'] );
+        // v3.1 - bugfix: dezelfde tijdzone gebruiken als de rest van de plugin, i.p.v.
+        // de kale strtotime() die de PHP-servertijdzone aanhield (kon een dag schelen).
+        try {
+            $expiry = ( new DateTime( $opties['ms_secret_expiry'], wp_timezone() ) )->getTimestamp();
+        } catch ( Exception $e ) {
+            return;
+        }
         $now = current_time( 'timestamp' );
         $diff = $expiry - $now;
         $days = floor( $diff / DAY_IN_SECONDS );
@@ -357,16 +417,27 @@ function mijn_smtp_menu() {
     );
 }
 
+/**
+ * v3.1 - bugfix: gebruikte voorheen strtotime() zonder tijdzone, wat de PHP-
+ * servertijdzone aanhoudt in plaats van de tijdzone die in WordPress is ingesteld
+ * (Instellingen > Algemeen). Op een server met een andere tijdzone dan de site kwam
+ * het rapport daardoor op een ander lokaal tijdstip binnen dan de "08:00" suggereert.
+ */
 function mijn_smtp_bepaal_volgende_rapport_tijd( $interval ) {
+    $nu = new DateTime( 'now', wp_timezone() );
     switch ( $interval ) {
         case 'daily':
-            return strtotime( 'tomorrow 08:00:00' );
+            $doel = ( clone $nu )->modify( 'tomorrow' )->setTime( 8, 0, 0 );
+            break;
         case 'monthly':
-            return strtotime( 'first day of next month 08:00:00' );
+            $doel = ( clone $nu )->modify( 'first day of next month' )->setTime( 8, 0, 0 );
+            break;
         case 'weekly':
         default:
-            return strtotime( 'next monday 08:00:00' );
+            $doel = ( clone $nu )->modify( 'next monday' )->setTime( 8, 0, 0 );
+            break;
     }
+    return $doel->getTimestamp();
 }
 
 register_activation_hook( __FILE__, 'mijn_smtp_activeer_plugin' );
@@ -409,6 +480,9 @@ function mijn_smtp_uninstall() {
     delete_transient( 'mijn_smtp_last_log_id' );
     delete_transient( 'mijn_smtp_ms_token_error' );
     delete_transient( 'mijn_smtp_google_token_error' );
+    delete_transient( 'mijn_smtp_ms_access_token_cache' );
+    delete_transient( 'mijn_smtp_google_access_token_cache' );
+    delete_transient( 'mijn_smtp_recente_releases_cache' );
     delete_transient( 'brink_smtp_github_release_cache' );
 }
 
@@ -485,6 +559,9 @@ function mijn_smtp_sanitize_opties( $input ) {
         wp_clear_scheduled_hook( 'mijn_smtp_wekelijks_rapport_event' );
         wp_schedule_event( mijn_smtp_bepaal_volgende_rapport_tijd( $output['rapport_interval'] ), $output['rapport_interval'], 'mijn_smtp_wekelijks_rapport_event' );
     }
+
+    // v3.2 - suggestie #10: optioneel mislukte verzendingen meesturen in het rapport
+    $output['rapport_inclusief_mislukt'] = ! empty( $input['rapport_inclusief_mislukt'] ) ? 1 : 0;
 
     // Afzender-overrides per plugin/formulier (suggestie #37)
     $output['from_overrides'] = array();
@@ -667,6 +744,16 @@ function mijn_smtp_instellingen_pagina() {
         echo '<div class="notice notice-success is-dismissible"><p>✅ Logboek is geleegd.</p></div>';
     }
 
+    // --- SPF/DKIM-CONTROLE (suggestie #11, alleen op handmatig verzoek) ---
+    if ( isset( $_POST['mijn_smtp_check_dns'] ) && current_user_can( 'manage_options' ) ) {
+        check_admin_referer( 'mijn_smtp_check_dns_action', 'mijn_smtp_check_dns_nonce' );
+        $domein_voor_check = ! empty( $opties['from_email'] ) ? substr( strrchr( $opties['from_email'], '@' ), 1 ) : '';
+        $methode_voor_check = isset( $opties['methode'] ) ? $opties['methode'] : 'standaard';
+        if ( $domein_voor_check ) {
+            mijn_smtp_dns_check( $domein_voor_check, $methode_voor_check, true );
+        }
+    }
+
     // --- FORCEER AUTOLOAD=FALSE NA EEN SETTINGS-SAVE ---
     if ( isset( $_GET['settings-updated'] ) && current_user_can( 'manage_options' ) ) {
         $huidige_opties = get_option( 'mijn_smtp_options', array() );
@@ -742,6 +829,30 @@ function mijn_smtp_instellingen_pagina() {
             <p style="font-size:12px; color: var(--brink-text-muted);">🟩 Verzonden &nbsp; 🟥 Mislukt</p>
         </div>
 
+        <div class="brink-smtp-card" style="margin-bottom: 20px;">
+            <h3 style="margin-top:0;">SPF/DKIM-controle</h3>
+            <?php
+            $domein_voor_check = ! empty( $opties['from_email'] ) ? substr( strrchr( $opties['from_email'], '@' ), 1 ) : '';
+            if ( ! $domein_voor_check ) : ?>
+                <p class="description">Vul eerst een afzender e-mailadres in om dit te kunnen controleren.</p>
+            <?php else :
+                $dns_resultaat = mijn_smtp_dns_check( $domein_voor_check, $methode ); ?>
+                <?php if ( $dns_resultaat ) : ?>
+                    <p>
+                        SPF voor <strong><?php echo esc_html( $domein_voor_check ); ?></strong>: <?php echo $dns_resultaat['spf'] ? '✅ gevonden' : '⚠️ geen SPF-record (v=spf1) gevonden'; ?><br>
+                        DKIM: <?php echo $dns_resultaat['dkim'] ? '✅ gevonden (selector: ' . esc_html( $dns_resultaat['dkim_selector'] ) . ')' : '⚠️ geen bekende DKIM-selector gevonden'; ?>
+                    </p>
+                    <p class="description">Laatst gecontroleerd: <?php echo esc_html( wp_date( 'd-m-Y H:i', $dns_resultaat['tijd'] ) ); ?>. Best-effort controle — een ontbrekend resultaat betekent niet altijd een probleem (bijv. bij een eigen DKIM-selector). Controleer bij twijfel handmatig via je DNS-provider.</p>
+                <?php else : ?>
+                    <p class="description">Nog niet gecontroleerd.</p>
+                <?php endif; ?>
+                <form method="post" action="">
+                    <?php wp_nonce_field( 'mijn_smtp_check_dns_action', 'mijn_smtp_check_dns_nonce' ); ?>
+                    <button type="submit" name="mijn_smtp_check_dns" class="button">SPF/DKIM nu controleren</button>
+                </form>
+            <?php endif; ?>
+        </div>
+
         <form method="post" action="options.php">
             <?php settings_fields( 'mijn_smtp_settings_group' ); ?>
 
@@ -813,6 +924,12 @@ function mijn_smtp_instellingen_pagina() {
                             <option value="weekly" <?php selected( $opties['rapport_interval'] ?? 'weekly', 'weekly' ); ?>>Wekelijks (maandag)</option>
                             <option value="monthly" <?php selected( $opties['rapport_interval'] ?? 'weekly', 'monthly' ); ?>>Maandelijks</option>
                         </select>
+                        <br>
+                        <label style="margin-top: 6px; display: inline-block;">
+                            <input type="checkbox" name="mijn_smtp_options[rapport_inclusief_mislukt]" value="1" <?php checked( ! empty( $opties['rapport_inclusief_mislukt'] ) ); ?> />
+                            Vermeld ook mislukte verzendingen (met reden) in het rapport
+                        </label>
+                        <p class="description">Let op: het logboek bewaart maximaal 7 dagen, dus bij een maandelijks rapport worden alleen de mislukkingen uit de laatste 7 dagen getoond (max. 20 regels).</p>
                     </td>
                 </tr>
             </table>
@@ -1121,6 +1238,34 @@ function mijn_smtp_instellingen_pagina() {
             <?php endif; ?>
         </div>
 
+        <!-- RECENTE UPDATES (v3.2 - suggestie #20) -->
+        <div class="brink-smtp-card" style="margin-top: 30px;">
+            <h3 style="margin-top:0;">Recente updates</h3>
+            <?php
+            $releases = mijn_smtp_haal_recente_releases_op();
+            if ( empty( $releases ) ) : ?>
+                <p class="description">Kon geen recente releases ophalen van GitHub.</p>
+            <?php else : ?>
+                <ul style="margin-left: 18px; list-style: disc;">
+                    <?php foreach ( $releases as $release ) : ?>
+                        <li>
+                            <strong><?php echo esc_html( $release['tag'] ); ?></strong>
+                            <?php if ( ! empty( $release['datum'] ) ) : ?>
+                                <span style="color: var(--brink-text-muted);">(<?php echo esc_html( wp_date( 'd-m-Y', strtotime( $release['datum'] ) ) ); ?>)</span>
+                            <?php endif; ?>
+                            <?php if ( ! empty( $release['titel'] ) ) : ?>
+                                — <?php echo esc_html( $release['titel'] ); ?>
+                            <?php endif; ?>
+                            <?php if ( ! empty( $release['url'] ) ) : ?>
+                                — <a href="<?php echo esc_url( $release['url'] ); ?>" target="_blank" rel="noopener noreferrer">bekijk</a>
+                            <?php endif; ?>
+                        </li>
+                    <?php endforeach; ?>
+                </ul>
+            <?php endif; ?>
+            <p class="description">Huidige geïnstalleerde versie: <?php echo esc_html( BRINK_SMTP_VERSION ); ?></p>
+        </div>
+
     </div>
 
     <script>
@@ -1182,11 +1327,11 @@ function mijn_smtp_verwerk_mail_log( $args ) {
     if ( $drempel > 0 && $dag_teller > $drempel && ! get_transient( 'mijn_smtp_volume_waarschuwing_verstuurd' ) ) {
         set_transient( 'mijn_smtp_volume_waarschuwing_verstuurd', 1, DAY_IN_SECONDS );
         set_transient( 'mijn_smtp_volume_waarschuwing_actief', $dag_teller, DAY_IN_SECONDS );
-        wp_mail(
-            get_option( 'admin_email' ),
-            'Ongebruikelijk hoog e-mailvolume - ' . get_bloginfo( 'name' ),
-            "Er zijn vandaag al {$dag_teller} e-mails verzonden via Brink Multimedia SMTP, meer dan de ingestelde drempel van {$drempel}.\n\nDit kan wijzen op misbruik van je website. Controleer het logboek in het dashboard."
-        );
+        // v3.1 - bugfix: niet meer direct wp_mail() aanroepen vanuit deze 'wp_mail'-filter
+        // zelf (dat telde de waarschuwingsmail zelf weer mee en kon bij een mislukte
+        // verzending van de waarschuwing onnodig extra fouten in het logboek zetten).
+        // In plaats daarvan één keer uitgesteld via cron.
+        wp_schedule_single_event( time() + 1, 'mijn_smtp_volume_alert_event', array( $dag_teller, $drempel ) );
     }
 
     $logs = get_option( 'mijn_smtp_email_logs', array() );
@@ -1227,13 +1372,23 @@ function mijn_smtp_markeer_log_mislukt( $error ) {
         set_transient( 'mijn_smtp_server_onbereikbaar_waarschuwing', $fouten, DAY_IN_SECONDS );
     }
 
+    // v3.1 - bugfix: de specifieke OAuth-foutmelding (bijv. "invalid_grant") werd tot nu
+    // toe alleen getoond bij een hándmatige testmail, niet in het permanente logboek —
+    // daar stond voor stille (achtergrond-)mails alleen de generieke PHPMailer-melding
+    // ("Could not authenticate"). Nu wordt de specifieke reden, indien bekend, toegevoegd.
+    $foutmelding = $error->get_error_message();
+    $oauth_fout = get_transient( 'mijn_smtp_ms_token_error' ) ?: get_transient( 'mijn_smtp_google_token_error' );
+    if ( $oauth_fout ) {
+        $foutmelding .= ' (OAuth: ' . $oauth_fout . ')';
+    }
+
     $last_id = get_transient( 'mijn_smtp_last_log_id' );
     if ( $last_id ) {
         $logs = get_option( 'mijn_smtp_email_logs', array() );
         foreach ( $logs as &$log ) {
             if ( $log['id'] === $last_id ) {
                 $log['status']     = 'failed';
-                $log['error']      = $error->get_error_message();
+                $log['error']      = $foutmelding;
                 $log['server_log'] = $brink_smtp_global_debug;
                 break;
             }
@@ -1258,8 +1413,40 @@ function mijn_smtp_verstuur_wekelijks_rapport() {
     $onderwerp = ( $labels[ $interval ] ?? 'Periodiek' ) . ' SMTP Rapport - ' . $sitenaam;
     $bericht   = "Hallo,\n\nDit is je rapportage voor '$sitenaam'.\nAantal verzonden e-mails sinds het vorige rapport: $aantal\n\nGroet,\nBrink SMTP";
 
+    // v3.2 - suggestie #10: optioneel de mislukte verzendingen (met reden) meesturen.
+    // Beperkt tot wat het logboek nog heeft (max. 7 dagen bewaartermijn), ongeacht het
+    // gekozen rapport-interval.
+    if ( ! empty( $opties['rapport_inclusief_mislukt'] ) ) {
+        $logs = get_option( 'mijn_smtp_email_logs', array() );
+        $mislukt = array_values( array_filter( $logs, function( $log ) {
+            return isset( $log['status'] ) && $log['status'] === 'failed';
+        } ) );
+
+        if ( ! empty( $mislukt ) ) {
+            $bericht .= "\n\nMislukte verzendingen (laatste 7 dagen, max. 20 getoond):\n";
+            foreach ( array_slice( $mislukt, 0, 20 ) as $log ) {
+                $bericht .= '- ' . wp_date( 'd-m-Y H:i', $log['time'] ) . ' naar ' . $log['to'] . ': ' . $log['error'] . "\n";
+            }
+        } else {
+            $bericht .= "\n\nEr waren geen mislukte verzendingen in de afgelopen 7 dagen.";
+        }
+    }
+
     wp_mail( $beheerder, $onderwerp, $bericht );
     update_option( 'mijn_smtp_wekelijkse_teller', 0, false );
+}
+
+/**
+ * v3.1: losse, uitgestelde afhandeling van de volumewaarschuwing-mail (zie de bugfix-
+ * toelichting bij mijn_smtp_verwerk_mail_log hierboven).
+ */
+add_action( 'mijn_smtp_volume_alert_event', 'mijn_smtp_verstuur_volume_alert', 10, 2 );
+function mijn_smtp_verstuur_volume_alert( $aantal, $drempel ) {
+    wp_mail(
+        get_option( 'admin_email' ),
+        'Ongebruikelijk hoog e-mailvolume - ' . get_bloginfo( 'name' ),
+        "Er zijn vandaag al {$aantal} e-mails verzonden via Brink Multimedia SMTP, meer dan de ingestelde drempel van {$drempel}.\n\nDit kan wijzen op misbruik van je website. Controleer het logboek in het dashboard."
+    );
 }
 
 /**
@@ -1267,6 +1454,13 @@ function mijn_smtp_verstuur_wekelijks_rapport() {
  */
 
 function mijn_smtp_get_ms_access_token() {
+    // v3.1 - bugfix: hergebruik een eerder opgehaald token zolang het geldig is,
+    // i.p.v. bij ELKE verzonden mail een nieuw netwerkverzoek naar Microsoft te doen.
+    $gecached = get_transient( 'mijn_smtp_ms_access_token_cache' );
+    if ( $gecached ) {
+        return $gecached;
+    }
+
     $opties = get_option( 'mijn_smtp_options', array() );
     if ( empty( $opties['ms_refresh_token'] ) || empty( $opties['ms_client_id'] ) || empty( $opties['ms_client_secret'] ) ) {
         return false;
@@ -1295,6 +1489,8 @@ function mijn_smtp_get_ms_access_token() {
                 $opties['ms_refresh_token'] = $data['refresh_token'];
                 update_option( 'mijn_smtp_options', $opties, false );
             }
+            $levensduur = isset( $data['expires_in'] ) ? max( 60, (int) $data['expires_in'] - 120 ) : 3300;
+            set_transient( 'mijn_smtp_ms_access_token_cache', $data['access_token'], $levensduur );
             return $data['access_token'];
         }
     }
@@ -1303,8 +1499,14 @@ function mijn_smtp_get_ms_access_token() {
 
 /**
  * v3.0 - suggestie #1: Google access token ophalen via refresh token.
+ * v3.1: ook hier het token cachen (zie bugfix-toelichting bij de Microsoft-variant).
  */
 function mijn_smtp_get_google_access_token() {
+    $gecached = get_transient( 'mijn_smtp_google_access_token_cache' );
+    if ( $gecached ) {
+        return $gecached;
+    }
+
     $opties = get_option( 'mijn_smtp_options', array() );
     if ( empty( $opties['google_refresh_token'] ) || empty( $opties['google_client_id'] ) || empty( $opties['google_client_secret'] ) ) {
         return false;
@@ -1328,6 +1530,8 @@ function mijn_smtp_get_google_access_token() {
         }
         if ( isset( $data['access_token'] ) ) {
             // Let op: Google geeft bij een refresh_token-grant meestal geen nieuwe refresh_token terug.
+            $levensduur = isset( $data['expires_in'] ) ? max( 60, (int) $data['expires_in'] - 120 ) : 3300;
+            set_transient( 'mijn_smtp_google_access_token_cache', $data['access_token'], $levensduur );
             return $data['access_token'];
         }
     }
@@ -1342,6 +1546,106 @@ function mijn_smtp_redact_debug_regel( $regel ) {
         return '[GEREDIGEERD - mogelijk gecodeerde inloggegevens]';
     }
     return $regel;
+}
+
+/**
+ * FEATURE (v3.2 - suggestie #11): best-effort SPF/DKIM-controle voor het ingestelde
+ * afzenderdomein. Bewust GEEN automatische controle op elke pagina-load (DNS-lookups
+ * kunnen traag of geblokkeerd zijn op sommige hosting) — alleen op handmatig verzoek
+ * via een knop op de instellingenpagina, met 24 uur caching.
+ */
+function mijn_smtp_dns_check( $domein, $methode, $forceer = false ) {
+    $cache_sleutel = 'mijn_smtp_dns_check_' . md5( $domein . '|' . $methode );
+
+    if ( ! $forceer ) {
+        $gecached = get_transient( $cache_sleutel );
+        return false !== $gecached ? $gecached : false;
+    }
+
+    if ( ! function_exists( 'dns_get_record' ) ) {
+        return false;
+    }
+
+    $resultaat = array( 'spf' => false, 'dkim' => false, 'dkim_selector' => '', 'tijd' => current_time( 'timestamp' ) );
+
+    $txt_records = @dns_get_record( $domein, DNS_TXT );
+    if ( is_array( $txt_records ) ) {
+        foreach ( $txt_records as $record ) {
+            if ( isset( $record['txt'] ) && stripos( $record['txt'], 'v=spf1' ) !== false ) {
+                $resultaat['spf'] = true;
+                break;
+            }
+        }
+    }
+
+    // DKIM: best-effort op basis van bekende standaard-selectors per methode. Een
+    // negatief resultaat betekent niet per se een probleem (een eigen selector is ook mogelijk).
+    $selectoren = array(
+        'microsoft' => array( 'selector1', 'selector2' ),
+        'google'    => array( 'google' ),
+        'sendgrid'  => array( 's1', 's2' ),
+    );
+    if ( isset( $selectoren[ $methode ] ) ) {
+        foreach ( $selectoren[ $methode ] as $selector ) {
+            $dkim_records = @dns_get_record( $selector . '._domainkey.' . $domein, DNS_TXT );
+            if ( is_array( $dkim_records ) && ! empty( $dkim_records ) ) {
+                $resultaat['dkim'] = true;
+                $resultaat['dkim_selector'] = $selector;
+                break;
+            }
+        }
+    }
+
+    set_transient( $cache_sleutel, $resultaat, DAY_IN_SECONDS );
+    return $resultaat;
+}
+
+/**
+ * FEATURE (v3.2 - suggestie #20): klein overzicht van de laatste GitHub-releases,
+ * met dezelfde caching-aanpak (12 uur / 15 minuten bij storing) als de auto-updater.
+ */
+function mijn_smtp_haal_recente_releases_op() {
+    $cache = get_transient( 'mijn_smtp_recente_releases_cache' );
+    if ( false !== $cache ) {
+        return $cache;
+    }
+
+    $response = wp_remote_get( 'https://api.github.com/repos/Brinkmulti/Smtp/releases?per_page=3', array(
+        'headers' => array( 'Accept' => 'application/vnd.github.v3+json' ),
+        'timeout' => 8,
+    ) );
+
+    if ( is_wp_error( $response ) || wp_remote_retrieve_response_code( $response ) !== 200 ) {
+        set_transient( 'mijn_smtp_recente_releases_cache', array(), 15 * MINUTE_IN_SECONDS );
+        return array();
+    }
+
+    $data = json_decode( wp_remote_retrieve_body( $response ), true );
+    $releases = array();
+    if ( is_array( $data ) ) {
+        foreach ( array_slice( $data, 0, 3 ) as $release ) {
+            $eerste_regel = '';
+            if ( ! empty( $release['body'] ) ) {
+                $regels = preg_split( '/\r\n|\r|\n/', trim( $release['body'] ) );
+                foreach ( $regels as $regel ) {
+                    $regel = trim( $regel, "# \t" );
+                    if ( $regel !== '' ) {
+                        $eerste_regel = $regel;
+                        break;
+                    }
+                }
+            }
+            $releases[] = array(
+                'tag'   => isset( $release['tag_name'] ) ? $release['tag_name'] : '',
+                'datum' => isset( $release['published_at'] ) ? $release['published_at'] : '',
+                'titel' => $eerste_regel,
+                'url'   => isset( $release['html_url'] ) ? $release['html_url'] : '',
+            );
+        }
+    }
+
+    set_transient( 'mijn_smtp_recente_releases_cache', $releases, 12 * HOUR_IN_SECONDS );
+    return $releases;
 }
 
 add_action( 'phpmailer_init', 'mijn_smtp_verwerk_verzending', 999 );
@@ -1556,6 +1860,11 @@ function mijn_smtp_verstuur_via_sendgrid( $atts ) {
 
     $code = wp_remote_retrieve_response_code( $response );
     if ( $code >= 200 && $code < 300 ) {
+        // v3.1 - bugfix: WordPress core vuurt 'wp_mail_succeeded' normaal automatisch af
+        // ná phpmailer->send(), maar dat pad wordt hier volledig overgeslagen (SendGrid
+        // loopt buiten PHPMailer om). Zonder dit bleef de "opeenvolgende fouten"-teller
+        // bij gebruik van SendGrid voorgoed hangen, ook nadat verzending weer werkte.
+        do_action( 'wp_mail_succeeded', $atts );
         return true;
     }
 
