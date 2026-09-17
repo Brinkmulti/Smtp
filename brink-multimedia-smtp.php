@@ -3,7 +3,7 @@
  * Plugin Name: Brink Multimedia SMTP
  * Plugin URI: https://www.brink-multimedia.nl
  * Description: Brink Multimedia SMTP Sender voor WordPress inclusief Microsoft-, Google- en SendGrid-koppeling en logging.
- * Version: 4.0
+ * Version: 4.1
  * Author: Brink Multimedia
  * Author URI: https://www.brink-multimedia.nl
  * Requires at least: 5.9
@@ -16,7 +16,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
-define( 'BRINK_SMTP_VERSION', '4.0' );
+define( 'BRINK_SMTP_VERSION', '4.1' );
 
 // Globale variabele om server communicatie op te vangen (alleen gevuld als debug-modus aan staat)
 global $brink_smtp_global_debug;
@@ -287,11 +287,26 @@ function mijn_smtp_verwerk_snelle_testmail() {
     exit;
 }
 
-add_action( 'admin_notices', 'mijn_smtp_toon_snelle_testmail_resultaat' );
-function mijn_smtp_toon_snelle_testmail_resultaat() {
+/**
+ * v4.1 - suggestie #2 (lichtgewicht): alle meldingen van deze plugin gebundeld in
+ * ÉÉN admin_notices-hook met ÉÉN capability-check, in plaats van vijf (nu zes) losse
+ * hooks die elk apart dezelfde check deden.
+ */
+add_action( 'admin_notices', 'mijn_smtp_toon_alle_meldingen' );
+function mijn_smtp_toon_alle_meldingen() {
     if ( ! current_user_can( 'manage_options' ) ) {
         return;
     }
+
+    mijn_smtp_render_snelle_testmail_notice();
+    mijn_smtp_render_expiry_notice();
+    mijn_smtp_render_volume_notice();
+    mijn_smtp_render_rate_limit_notice();
+    mijn_smtp_render_server_onbereikbaar_notice();
+    mijn_smtp_render_conflict_notice();
+}
+
+function mijn_smtp_render_snelle_testmail_notice() {
     $sleutel = 'mijn_smtp_snelle_testmail_resultaat_' . get_current_user_id();
     $resultaat = get_transient( $sleutel );
     if ( ! $resultaat ) {
@@ -308,11 +323,7 @@ function mijn_smtp_toon_snelle_testmail_resultaat() {
 /**
  * FEATURE 3: Microsoft Token Expiry Warning
  */
-add_action( 'admin_notices', 'mijn_smtp_check_expiry_notice' );
-function mijn_smtp_check_expiry_notice() {
-    if ( ! current_user_can( 'manage_options' ) ) {
-        return;
-    }
+function mijn_smtp_render_expiry_notice() {
     $opties = get_option( 'mijn_smtp_options', array() );
     if ( ! empty( $opties['methode'] ) && $opties['methode'] === 'microsoft' && ! empty( $opties['ms_secret_expiry'] ) ) {
         // v3.1 - bugfix: dezelfde tijdzone gebruiken als de rest van de plugin, i.p.v.
@@ -337,11 +348,7 @@ function mijn_smtp_check_expiry_notice() {
 /**
  * FEATURE (v3.0 - suggestie #31): waarschuwing bij ongebruikelijk hoog dagvolume.
  */
-add_action( 'admin_notices', 'mijn_smtp_toon_volume_waarschuwing' );
-function mijn_smtp_toon_volume_waarschuwing() {
-    if ( ! current_user_can( 'manage_options' ) ) {
-        return;
-    }
+function mijn_smtp_render_volume_notice() {
     $aantal = get_transient( 'mijn_smtp_volume_waarschuwing_actief' );
     if ( $aantal ) {
         echo '<div class="notice notice-warning"><p>📈 <strong>Brink Multimedia SMTP:</strong> Er zijn vandaag al <strong>' . esc_html( $aantal ) . '</strong> e-mails verzonden — meer dan je ingestelde waarschuwingsdrempel. Controleer of dit klopt (mogelijk misbruik van een formulier of account).</p></div>';
@@ -349,13 +356,19 @@ function mijn_smtp_toon_volume_waarschuwing() {
 }
 
 /**
+ * v4.1 - suggestie #1: melding wanneer de harde verzendlimiet per uur is geraakt.
+ */
+function mijn_smtp_render_rate_limit_notice() {
+    $limiet = get_transient( 'mijn_smtp_rate_limit_actief' );
+    if ( $limiet ) {
+        echo '<div class="notice notice-error"><p>🛑 <strong>Brink Multimedia SMTP:</strong> De verzendlimiet van <strong>' . esc_html( $limiet ) . ' e-mails per uur</strong> is bereikt. Extra e-mails worden tijdelijk geblokkeerd (niet alleen gelogd) totdat het volgende uur begint. Controleer het logboek — dit kan wijzen op misbruik.</p></div>';
+    }
+}
+
+/**
  * FEATURE (v3.0 - suggestie #11): waarschuwing bij opeenvolgende mislukte verzendingen.
  */
-add_action( 'admin_notices', 'mijn_smtp_toon_server_onbereikbaar_notice' );
-function mijn_smtp_toon_server_onbereikbaar_notice() {
-    if ( ! current_user_can( 'manage_options' ) ) {
-        return;
-    }
+function mijn_smtp_render_server_onbereikbaar_notice() {
     $fouten = get_transient( 'mijn_smtp_server_onbereikbaar_waarschuwing' );
     if ( $fouten ) {
         echo '<div class="notice notice-error"><p>📡 <strong>Brink Multimedia SMTP:</strong> De laatste <strong>' . esc_html( $fouten ) . '</strong> verzendpogingen zijn achter elkaar mislukt. Controleer je instellingen of de status van je mailserver/-provider.</p></div>';
@@ -391,11 +404,7 @@ function mijn_smtp_detecteer_conflicterende_plugins() {
     }
     return $gevonden;
 }
-add_action( 'admin_notices', 'mijn_smtp_toon_conflict_waarschuwing' );
-function mijn_smtp_toon_conflict_waarschuwing() {
-    if ( ! current_user_can( 'manage_options' ) ) {
-        return;
-    }
+function mijn_smtp_render_conflict_notice() {
     $gevonden = mijn_smtp_detecteer_conflicterende_plugins();
     if ( ! empty( $gevonden ) ) {
         $meervoud = count( $gevonden ) === 1 ? 'is nog een andere SMTP-plugin actief' : 'zijn nog andere SMTP-plugins actief';
@@ -480,6 +489,8 @@ function mijn_smtp_uninstall() {
     delete_transient( 'mijn_smtp_last_log_id' );
     delete_transient( 'mijn_smtp_ms_token_error' );
     delete_transient( 'mijn_smtp_google_token_error' );
+    delete_transient( 'mijn_smtp_server_onbereikbaar_waarschuwing' );
+    delete_transient( 'mijn_smtp_rate_limit_actief' );
     delete_transient( 'mijn_smtp_ms_access_token_cache' );
     delete_transient( 'mijn_smtp_google_access_token_cache' );
     delete_transient( 'mijn_smtp_recente_releases_cache' );
@@ -550,6 +561,9 @@ function mijn_smtp_sanitize_opties( $input ) {
 
     // Volumewaarschuwing (suggestie #31)
     $output['volume_waarschuwing_drempel'] = isset( $input['volume_waarschuwing_drempel'] ) ? absint( $input['volume_waarschuwing_drempel'] ) : 0;
+
+    // v4.1 - suggestie #1: harde verzendlimiet per uur (blokkeert i.p.v. alleen waarschuwt)
+    $output['verzendlimiet_per_uur'] = isset( $input['verzendlimiet_per_uur'] ) ? absint( $input['verzendlimiet_per_uur'] ) : 0;
 
     // Rapport-interval (suggestie #32) + herplannen indien gewijzigd
     $toegestane_intervallen = array( 'daily', 'weekly', 'monthly' );
@@ -913,7 +927,14 @@ function mijn_smtp_instellingen_pagina() {
                     <th scope="row">Waarschuwingsdrempel per dag</th>
                     <td>
                         <input type="number" min="0" name="mijn_smtp_options[volume_waarschuwing_drempel]" value="<?php echo esc_attr( $opties['volume_waarschuwing_drempel'] ?? 0 ); ?>" class="small-text" />
-                        <p class="description">Toon een waarschuwing als er op één dag meer dan dit aantal e-mails wordt verzonden. 0 = uitgeschakeld.</p>
+                        <p class="description">Toon een waarschuwing als er op één dag meer dan dit aantal e-mails wordt verzonden. 0 = uitgeschakeld. Dit blokkeert niets, het meldt alleen.</p>
+                    </td>
+                </tr>
+                <tr>
+                    <th scope="row">Harde verzendlimiet per uur</th>
+                    <td>
+                        <input type="number" min="0" name="mijn_smtp_options[verzendlimiet_per_uur]" value="<?php echo esc_attr( $opties['verzendlimiet_per_uur'] ?? 0 ); ?>" class="small-text" />
+                        <p class="description">In tegenstelling tot de waarschuwingsdrempel hierboven: extra e-mails worden <strong>daadwerkelijk geblokkeerd</strong> zodra dit aantal in het huidige uur is bereikt. 0 = uitgeschakeld. Handig als extra vangnet tegen misbruik van een formulier of gecompromitteerd account.</p>
                     </td>
                 </tr>
                 <tr>
@@ -1753,6 +1774,26 @@ function mijn_smtp_registreer_oauth_provider_class() {
 add_filter( 'pre_wp_mail', 'mijn_smtp_pre_wp_mail_intercept', 10, 2 );
 function mijn_smtp_pre_wp_mail_intercept( $return, $atts ) {
     $opties = get_option( 'mijn_smtp_options', array() );
+
+    // v4.1 - suggestie #1: harde verzendlimiet per uur. Dit draait vóór de keuze van
+    // mailmethode, dus geldt voor Standaard SMTP, Microsoft, Google én SendGrid.
+    $limiet = (int) ( $opties['verzendlimiet_per_uur'] ?? 0 );
+    if ( $limiet > 0 ) {
+        $uur_sleutel = 'mijn_smtp_uur_teller_' . current_time( 'YmdH' );
+        $uur_teller = (int) get_transient( $uur_sleutel );
+
+        if ( $uur_teller >= $limiet ) {
+            set_transient( 'mijn_smtp_rate_limit_actief', $limiet, HOUR_IN_SECONDS );
+            do_action( 'wp_mail_failed', new WP_Error(
+                'mijn_smtp_rate_limit',
+                'Verzendlimiet van ' . $limiet . ' e-mails per uur is bereikt; deze e-mail is geblokkeerd.'
+            ) );
+            return false;
+        }
+
+        set_transient( $uur_sleutel, $uur_teller + 1, HOUR_IN_SECONDS );
+    }
+
     if ( ( $opties['methode'] ?? 'standaard' ) !== 'sendgrid' ) {
         return $return; // laat de normale SMTP-flow via phpmailer_init lopen
     }
