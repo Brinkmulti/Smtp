@@ -3,7 +3,7 @@
  * Plugin Name: Brink Multimedia SMTP
  * Plugin URI: https://www.brink-multimedia.nl
  * Description: Brink Multimedia SMTP Sender voor WordPress inclusief Microsoft-, Google- en SendGrid-koppeling, logging en SPF/DKIM/DMARC-controle voor elke mailaanbieder.
- * Version: 4.2
+ * Version: 4.2.1
  * Author: Brink Multimedia
  * Author URI: https://www.brink-multimedia.nl
  * Requires at least: 5.9
@@ -16,7 +16,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
-define( 'BRINK_SMTP_VERSION', '4.2' );
+define( 'BRINK_SMTP_VERSION', '4.2.1' );
 
 // Globale variabele om server communicatie op te vangen (alleen gevuld als debug-modus aan staat)
 global $brink_smtp_global_debug;
@@ -883,8 +883,10 @@ function mijn_smtp_instellingen_pagina() {
                         DMARC: <?php
                         if ( ! isset( $dns_resultaat['dmarc'] ) ) {
                             echo '–';
+                        } elseif ( $dns_resultaat['dmarc'] && ! empty( $dns_resultaat['dmarc_fouten'] ) ) {
+                            echo '❌ gevonden, maar er zit een fout in: ' . esc_html( implode( '; ', $dns_resultaat['dmarc_fouten'] ) ) . '.';
                         } elseif ( $dns_resultaat['dmarc'] ) {
-                            echo '✅ gevonden (beleid: <code>' . esc_html( $dns_resultaat['dmarc_beleid'] ? $dns_resultaat['dmarc_beleid'] : 'none' ) . '</code>)';
+                            echo '✅ gevonden en in orde (beleid: <code>' . esc_html( $dns_resultaat['dmarc_beleid'] ? $dns_resultaat['dmarc_beleid'] : 'none' ) . '</code>)';
                         } else {
                             echo '⚠️ geen DMARC-record (_dmarc) gevonden';
                         } ?>
@@ -1634,6 +1636,65 @@ function mijn_smtp_redact_debug_regel( $regel ) {
 }
 
 /**
+ * FEATURE (v4.2.1): een DMARC-record echt nakijken. Een kleine schrijffout,
+ * zoals een vergeten puntkomma ("p=quarantine rua=..."), maakt het hele record
+ * ongeldig voor veel ontvangers. En wie rapporten naar een ander domein laat
+ * sturen, moet dat andere domein daar toestemming voor laten geven.
+ */
+function mijn_smtp_dmarc_check( $txt, $domein ) {
+    $fouten = array();
+    $tags   = array();
+
+    foreach ( array_filter( array_map( 'trim', explode( ';', $txt ) ) ) as $deel ) {
+        if ( strpos( $deel, '=' ) === false ) {
+            $fouten[] = 'onbekend stuk "' . $deel . '"';
+            continue;
+        }
+        list( $sleutel, $waarde ) = array_map( 'trim', explode( '=', $deel, 2 ) );
+        $tags[ strtolower( $sleutel ) ] = $waarde;
+    }
+
+    $beleid = isset( $tags['p'] ) ? strtolower( $tags['p'] ) : '';
+    if ( '' === $beleid ) {
+        $fouten[] = 'er staat geen beleid (p=) in';
+    } elseif ( ! in_array( $beleid, array( 'none', 'quarantine', 'reject' ), true ) ) {
+        $fouten[] = 'het beleid "p=' . $tags['p'] . '" klopt niet; waarschijnlijk mist er een puntkomma (;) tussen twee onderdelen';
+        $beleid   = '';
+    }
+
+    // Rapporten naar een ander domein: dat domein moet dat toestaan.
+    foreach ( array( 'rua', 'ruf' ) as $soort ) {
+        if ( empty( $tags[ $soort ] ) ) {
+            continue;
+        }
+        foreach ( explode( ',', $tags[ $soort ] ) as $adres ) {
+            if ( ! preg_match( '/^mailto:[^@]+@([^!\s]+)/i', trim( $adres ), $m ) ) {
+                $fouten[] = 'het rapportadres "' . trim( $adres ) . '" moet beginnen met mailto:';
+                continue;
+            }
+            $rapport_domein = strtolower( $m[1] );
+            $eigen          = strtolower( $domein );
+            if ( $rapport_domein === $eigen || substr( $rapport_domein, -strlen( '.' . $eigen ) ) === '.' . $eigen || substr( $eigen, -strlen( '.' . $rapport_domein ) ) === '.' . $rapport_domein ) {
+                continue;
+            }
+            $toestemming = @dns_get_record( $eigen . '._report._dmarc.' . $rapport_domein, DNS_TXT );
+            $ok          = false;
+            if ( is_array( $toestemming ) ) {
+                foreach ( $toestemming as $record ) {
+                    if ( isset( $record['txt'] ) && stripos( $record['txt'], 'v=DMARC1' ) !== false ) {
+                        $ok = true;
+                    }
+                }
+            }
+            if ( ! $ok ) {
+                $fouten[] = 'rapporten gaan naar ' . $rapport_domein . ', maar dat domein geeft daar geen toestemming voor. Zet bij ' . $rapport_domein . ' een TXT-record "' . $eigen . '._report._dmarc" met de waarde "v=DMARC1"';
+            }
+        }
+    }
+
+    return array( 'beleid' => $beleid, 'fouten' => array_values( array_unique( $fouten ) ) );
+}
+/**
  * FEATURE (v4.2): veelgebruikte DKIM-selectors van allerlei aanbieders. Een
  * DKIM-sleutel staat in de DNS op <selector>._domainkey.<domein>; de selector
  * kies je aanbieder zelf. We proberen deze lijst af; vind je aanbieder er niet
@@ -1802,7 +1863,7 @@ function mijn_smtp_dkim_uit_koppen( $koppen, $domein ) {
  */
 function mijn_smtp_dns_check( $domein, $methode, $forceer = false ) {
     $eigen_selector = (string) get_option( 'mijn_smtp_dkim_selector', '' );
-    $cache_sleutel  = 'mijn_smtp_dns_check_' . md5( $domein . '|' . $methode . '|' . $eigen_selector . '|v42' );
+    $cache_sleutel  = 'mijn_smtp_dns_check_' . md5( $domein . '|' . $methode . '|' . $eigen_selector . '|v421' );
 
     if ( ! $forceer ) {
         $gecached = get_transient( $cache_sleutel );
@@ -1813,7 +1874,7 @@ function mijn_smtp_dns_check( $domein, $methode, $forceer = false ) {
         return false;
     }
 
-    $resultaat = array( 'spf' => false, 'dkim' => false, 'dkim_selector' => '', 'dkim_status' => 'niet_gevonden', 'dkim_uitleg' => '', 'dkim_gezocht' => 0, 'dmarc' => false, 'dmarc_beleid' => '', 'tijd' => current_time( 'timestamp' ) );
+    $resultaat = array( 'spf' => false, 'dkim' => false, 'dkim_selector' => '', 'dkim_status' => 'niet_gevonden', 'dkim_uitleg' => '', 'dkim_gezocht' => 0, 'dmarc' => false, 'dmarc_beleid' => '', 'dmarc_fouten' => array(), 'tijd' => current_time( 'timestamp' ) );
 
     $txt_records = @dns_get_record( $domein, DNS_TXT );
     if ( is_array( $txt_records ) ) {
@@ -1862,7 +1923,9 @@ function mijn_smtp_dns_check( $domein, $methode, $forceer = false ) {
             $txt = isset( $record['entries'] ) && is_array( $record['entries'] ) ? implode( '', $record['entries'] ) : ( isset( $record['txt'] ) ? $record['txt'] : '' );
             if ( stripos( $txt, 'v=DMARC1' ) !== false ) {
                 $resultaat['dmarc']        = true;
-                $resultaat['dmarc_beleid'] = preg_match( '/\bp=\s*([a-z]+)/i', $txt, $m ) ? strtolower( $m[1] ) : '';
+                $controle                  = mijn_smtp_dmarc_check( $txt, $domein );
+                $resultaat['dmarc_beleid'] = $controle['beleid'];
+                $resultaat['dmarc_fouten'] = $controle['fouten'];
                 break;
             }
         }
