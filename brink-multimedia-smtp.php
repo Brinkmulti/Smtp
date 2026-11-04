@@ -2,8 +2,8 @@
 /**
  * Plugin Name: Brink Multimedia SMTP
  * Plugin URI: https://www.brink-multimedia.nl
- * Description: Brink Multimedia SMTP Sender voor WordPress inclusief Microsoft-, Google- en SendGrid-koppeling en logging.
- * Version: 4.1
+ * Description: Brink Multimedia SMTP Sender voor WordPress inclusief Microsoft-, Google- en SendGrid-koppeling, logging en SPF/DKIM/DMARC-controle voor elke mailaanbieder.
+ * Version: 4.2
  * Author: Brink Multimedia
  * Author URI: https://www.brink-multimedia.nl
  * Requires at least: 5.9
@@ -16,7 +16,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
-define( 'BRINK_SMTP_VERSION', '4.1' );
+define( 'BRINK_SMTP_VERSION', '4.2' );
 
 // Globale variabele om server communicatie op te vangen (alleen gevuld als debug-modus aan staat)
 global $brink_smtp_global_debug;
@@ -763,6 +763,21 @@ function mijn_smtp_instellingen_pagina() {
         check_admin_referer( 'mijn_smtp_check_dns_action', 'mijn_smtp_check_dns_nonce' );
         $domein_voor_check = ! empty( $opties['from_email'] ) ? substr( strrchr( $opties['from_email'], '@' ), 1 ) : '';
         $methode_voor_check = isset( $opties['methode'] ) ? $opties['methode'] : 'standaard';
+
+        // v4.2: een eigen DKIM-selector, en het bewijs uit de kopregels van een ontvangen mail.
+        if ( isset( $_POST['mijn_smtp_dkim_selector'] ) ) {
+            update_option( 'mijn_smtp_dkim_selector', preg_replace( '/[^A-Za-z0-9._-]/', '', wp_unslash( $_POST['mijn_smtp_dkim_selector'] ) ), false );
+        }
+        if ( ! empty( $_POST['mijn_smtp_dkim_koppen'] ) && $domein_voor_check ) {
+            $bewijs = mijn_smtp_dkim_uit_koppen( wp_unslash( $_POST['mijn_smtp_dkim_koppen'] ), $domein_voor_check );
+            $bewijs['voor'] = strtolower( $domein_voor_check );
+            update_option( 'mijn_smtp_dkim_bewijs', $bewijs, false );
+            // De selector uit de mail is de juiste: die gebruiken we voortaan.
+            if ( ! empty( $bewijs['selector'] ) && ( ! $bewijs['domein'] || strtolower( $bewijs['domein'] ) === strtolower( $domein_voor_check ) ) ) {
+                update_option( 'mijn_smtp_dkim_selector', preg_replace( '/[^A-Za-z0-9._-]/', '', $bewijs['selector'] ), false );
+            }
+        }
+
         if ( $domein_voor_check ) {
             mijn_smtp_dns_check( $domein_voor_check, $methode_voor_check, true );
         }
@@ -844,25 +859,74 @@ function mijn_smtp_instellingen_pagina() {
         </div>
 
         <div class="brink-smtp-card" style="margin-bottom: 20px;">
-            <h3 style="margin-top:0;">SPF/DKIM-controle</h3>
+            <h3 style="margin-top:0;">SPF/DKIM/DMARC-controle</h3>
             <?php
             $domein_voor_check = ! empty( $opties['from_email'] ) ? substr( strrchr( $opties['from_email'], '@' ), 1 ) : '';
             if ( ! $domein_voor_check ) : ?>
                 <p class="description">Vul eerst een afzender e-mailadres in om dit te kunnen controleren.</p>
             <?php else :
-                $dns_resultaat = mijn_smtp_dns_check( $domein_voor_check, $methode ); ?>
+                $dns_resultaat = mijn_smtp_dns_check( $domein_voor_check, $methode );
+                $dkim_bewijs   = get_option( 'mijn_smtp_dkim_bewijs', array() );
+                $dkim_bewijs   = ( is_array( $dkim_bewijs ) && isset( $dkim_bewijs['voor'] ) && $dkim_bewijs['voor'] === strtolower( $domein_voor_check ) ) ? $dkim_bewijs : array(); ?>
                 <?php if ( $dns_resultaat ) : ?>
                     <p>
                         SPF voor <strong><?php echo esc_html( $domein_voor_check ); ?></strong>: <?php echo $dns_resultaat['spf'] ? '✅ gevonden' : '⚠️ geen SPF-record (v=spf1) gevonden'; ?><br>
-                        DKIM: <?php echo $dns_resultaat['dkim'] ? '✅ gevonden (selector: ' . esc_html( $dns_resultaat['dkim_selector'] ) . ')' : '⚠️ geen bekende DKIM-selector gevonden'; ?>
+                        DKIM in de DNS: <?php
+                        $dkim_status = isset( $dns_resultaat['dkim_status'] ) ? $dns_resultaat['dkim_status'] : ( $dns_resultaat['dkim'] ? 'ok' : 'niet_gevonden' );
+                        if ( 'ok' === $dkim_status ) {
+                            echo '✅ gevonden en in orde (selector: <code>' . esc_html( $dns_resultaat['dkim_selector'] ) . '</code>' . ( ! empty( $dns_resultaat['dkim_uitleg'] ) ? ', ' . esc_html( $dns_resultaat['dkim_uitleg'] ) : '' ) . ')';
+                        } elseif ( 'niet_gevonden' === $dkim_status ) {
+                            echo '❔ niet gevonden onder ' . (int) ( isset( $dns_resultaat['dkim_gezocht'] ) ? $dns_resultaat['dkim_gezocht'] : 0 ) . ' bekende selectors. Dat hoeft niet te betekenen dat DKIM ontbreekt: je aanbieder kan een eigen selector gebruiken. Vul hieronder de selector in, of plak de kopregels van een ontvangen mail.';
+                        } else {
+                            echo '❌ record gevonden (selector: <code>' . esc_html( $dns_resultaat['dkim_selector'] ) . '</code>), maar ' . esc_html( isset( $dns_resultaat['dkim_uitleg'] ) ? $dns_resultaat['dkim_uitleg'] : 'het is niet bruikbaar' );
+                        } ?><br>
+                        DMARC: <?php
+                        if ( ! isset( $dns_resultaat['dmarc'] ) ) {
+                            echo '–';
+                        } elseif ( $dns_resultaat['dmarc'] ) {
+                            echo '✅ gevonden (beleid: <code>' . esc_html( $dns_resultaat['dmarc_beleid'] ? $dns_resultaat['dmarc_beleid'] : 'none' ) . '</code>)';
+                        } else {
+                            echo '⚠️ geen DMARC-record (_dmarc) gevonden';
+                        } ?>
                     </p>
-                    <p class="description">Laatst gecontroleerd: <?php echo esc_html( wp_date( 'd-m-Y H:i', $dns_resultaat['tijd'] ) ); ?>. Best-effort controle — een ontbrekend resultaat betekent niet altijd een probleem (bijv. bij een eigen DKIM-selector). Controleer bij twijfel handmatig via je DNS-provider.</p>
+                    <p class="description">DNS laatst gecontroleerd: <?php echo esc_html( wp_date( 'd-m-Y H:i', $dns_resultaat['tijd'] ) ); ?>.</p>
                 <?php else : ?>
                     <p class="description">Nog niet gecontroleerd.</p>
                 <?php endif; ?>
+
+                <?php if ( $dkim_bewijs ) : ?>
+                    <p><strong>Werkt DKIM echt?</strong> Volgens een ontvangen mail (<?php echo esc_html( wp_date( 'd-m-Y H:i', $dkim_bewijs['tijd'] ) ); ?>):
+                    <?php
+                    switch ( $dkim_bewijs['resultaat'] ) {
+                        case 'pass':
+                            echo '✅ <strong>ja</strong>: de ontvanger keurde de handtekening goed (dkim=pass) voor <code>' . esc_html( $dkim_bewijs['domein'] ) . '</code>' . ( $dkim_bewijs['selector'] ? ', selector <code>' . esc_html( $dkim_bewijs['selector'] ) . '</code>' : '' ) . '.';
+                            break;
+                        case 'ander_domein':
+                            echo '⚠️ de mail is wel ondertekend, maar met het domein <code>' . esc_html( $dkim_bewijs['domein'] ) . '</code> en niet met je eigen domein. Vraag je aanbieder om DKIM voor <code>' . esc_html( $domein_voor_check ) . '</code> aan te zetten.';
+                            break;
+                        case 'geen':
+                            echo '❌ <strong>nee</strong>: de mail heeft geen DKIM-handtekening. Zet DKIM aan bij je mailaanbieder.';
+                            break;
+                        case '':
+                            echo '❔ er staat een handtekening in (selector <code>' . esc_html( $dkim_bewijs['selector'] ) . '</code>), maar geen oordeel van de ontvanger. Plak de kopregels zoals de ontvanger ze toont (met "Authentication-Results").';
+                            break;
+                        default:
+                            echo '❌ <strong>nee</strong>: de ontvanger keurde de handtekening af (dkim=' . esc_html( $dkim_bewijs['resultaat'] ) . '). Controleer of de sleutel in de DNS dezelfde is als op de mailserver.';
+                    } ?></p>
+                <?php endif; ?>
+
                 <form method="post" action="">
                     <?php wp_nonce_field( 'mijn_smtp_check_dns_action', 'mijn_smtp_check_dns_nonce' ); ?>
-                    <button type="submit" name="mijn_smtp_check_dns" class="button">SPF/DKIM nu controleren</button>
+                    <p>
+                        <label for="mijn_smtp_dkim_selector"><strong>DKIM-selector</strong> (leeg laten = automatisch zoeken)</label><br>
+                        <input type="text" id="mijn_smtp_dkim_selector" name="mijn_smtp_dkim_selector" value="<?php echo esc_attr( get_option( 'mijn_smtp_dkim_selector', '' ) ); ?>" class="regular-text" placeholder="bijvoorbeeld default of selector1" pattern="[A-Za-z0-9._-]*">
+                    </p>
+                    <details>
+                        <summary style="cursor:pointer;">Zeker weten of DKIM werkt? Plak de kopregels van een ontvangen mail</summary>
+                        <p class="description">Stuur een testmail naar jezelf, bijvoorbeeld een Gmail-adres. Open hem en kies "Origineel weergeven" (Gmail) of "Berichtbron / Kopteksten weergeven" (Outlook). Kopieer alles en plak het hier. We lezen alleen het oordeel van de ontvanger en de selector; de tekst zelf bewaren we niet.</p>
+                        <textarea name="mijn_smtp_dkim_koppen" rows="6" class="large-text code" placeholder="Authentication-Results: mx.google.com; dkim=pass header.i=@jouwdomein.nl ..."></textarea>
+                    </details>
+                    <p><button type="submit" name="mijn_smtp_check_dns" class="button">SPF/DKIM/DMARC nu controleren</button></p>
                 </form>
             <?php endif; ?>
         </div>
@@ -1570,13 +1634,175 @@ function mijn_smtp_redact_debug_regel( $regel ) {
 }
 
 /**
+ * FEATURE (v4.2): veelgebruikte DKIM-selectors van allerlei aanbieders. Een
+ * DKIM-sleutel staat in de DNS op <selector>._domainkey.<domein>; de selector
+ * kies je aanbieder zelf. We proberen deze lijst af; vind je aanbieder er niet
+ * in, dan vult de beheerder de selector zelf in, of plakt hij de kopregels van
+ * een ontvangen mail (daar staat de selector in).
+ */
+function mijn_smtp_dkim_selectoren( $methode ) {
+    $per_methode = array(
+        'microsoft' => array( 'selector1', 'selector2' ),
+        'google'    => array( 'google', 'google2048' ),
+        'sendgrid'  => array( 's1', 's2', 'smtpapi' ),
+    );
+
+    $algemeen = array(
+        // Algemeen, cPanel, Plesk, DirectAdmin, ISPConfig
+        'default', 'dkim', 'mail', 'email', 'smtp', 'x', 'dk', 'key1', 'key2', 'dkim1', 'dkim2', 'mx', 'mta', 'mail1', 'mail2', 'sig1',
+        // Microsoft 365, Google Workspace, SendGrid
+        'selector1', 'selector2', 'google', 'google2048', 's1', 's2', 'smtpapi',
+        // Mailchimp/Mandrill, Mailgun, Postmark, Brevo, Mailjet, Amazon/SparkPost, HubSpot, Zendesk
+        'k1', 'k2', 'k3', 'mandrill', 'mte1', 'mailo', 'pic', 'pm', 'mail-brevo', 'mailjet', 'scph0220', 'hs1', 'hs2', 'zendesk1', 'zendesk2',
+        // Zoho, Fastmail, Proton, iCloud, Yahoo
+        'zoho', 'zmail', 'fm1', 'fm2', 'fm3', 'protonmail', 'protonmail2', 'protonmail3', 'sig1', 's1024', 's2048', 'mbox',
+        // Nederlandse en Europese hosters
+        'transip-a', 'transip-b', 'transip-c', 'rsa1', 'rsa2', 'strato-dkim-0001', 'strato-dkim-0002', 'hostnet', 'mijndomein', 'antagonist', 'vimexx', 'ovh', 'ovhmo', 'ionos', 'hostinger', 'hostingerdkim', 'one', 'cloudflare', 'everlytickey1', 'everlytickey2',
+    );
+
+    $lijst = array_merge( isset( $per_methode[ $methode ] ) ? $per_methode[ $methode ] : array(), $algemeen );
+
+    return array_values( array_unique( apply_filters( 'mijn_smtp_dkim_selectoren', $lijst, $methode ) ) );
+}
+
+/**
+ * FEATURE (v4.2): is dit DKIM-record bruikbaar? Kijkt of er een sleutel in
+ * staat, of hij niet is ingetrokken (lege p=) en hoe sterk hij is.
+ */
+function mijn_smtp_dkim_sleutel_check( $txt ) {
+    $tags = array();
+    foreach ( explode( ';', $txt ) as $deel ) {
+        if ( strpos( $deel, '=' ) !== false ) {
+            list( $sleutel, $waarde ) = explode( '=', $deel, 2 );
+            // Spaties en aanhalingstekens weg: lange records staan soms in stukjes "..." "...".
+            $tags[ strtolower( trim( $sleutel ) ) ] = preg_replace( '/[\s"]+/', '', $waarde );
+        }
+    }
+
+    if ( ! isset( $tags['p'] ) ) {
+        return array( 'status' => 'ongeldig', 'bits' => 0, 'tekst' => 'er staat geen sleutel (p=) in het record' );
+    }
+    if ( '' === $tags['p'] ) {
+        return array( 'status' => 'ingetrokken', 'bits' => 0, 'tekst' => 'de sleutel is ingetrokken (lege p=)' );
+    }
+
+    $ruw = base64_decode( $tags['p'], true );
+    if ( false === $ruw ) {
+        return array( 'status' => 'ongeldig', 'bits' => 0, 'tekst' => 'de sleutel is geen geldige base64' );
+    }
+
+    if ( isset( $tags['k'] ) && 'ed25519' === strtolower( $tags['k'] ) ) {
+        return 32 === strlen( $ruw )
+            ? array( 'status' => 'ok', 'bits' => 256, 'tekst' => 'Ed25519-sleutel' )
+            : array( 'status' => 'ongeldig', 'bits' => 0, 'tekst' => 'de Ed25519-sleutel heeft niet de juiste lengte' );
+    }
+
+    $bits = 0;
+    if ( function_exists( 'openssl_pkey_get_public' ) ) {
+        $pem    = "-----BEGIN PUBLIC KEY-----\n" . chunk_split( $tags['p'], 64, "\n" ) . "-----END PUBLIC KEY-----\n";
+        $sleutel = @openssl_pkey_get_public( $pem );
+        if ( $sleutel ) {
+            $details = openssl_pkey_get_details( $sleutel );
+            $bits    = isset( $details['bits'] ) ? (int) $details['bits'] : 0;
+        } else {
+            return array( 'status' => 'ongeldig', 'bits' => 0, 'tekst' => 'de sleutel is niet te lezen' );
+        }
+    } else {
+        // Zonder OpenSSL een schatting op basis van de lengte.
+        $bits = strlen( $ruw ) > 200 ? 2048 : 1024;
+    }
+
+    if ( $bits && $bits < 1024 ) {
+        return array( 'status' => 'zwak', 'bits' => $bits, 'tekst' => 'de sleutel is te kort (' . $bits . ' bits); veel ontvangers vertrouwen die niet meer' );
+    }
+
+    return array( 'status' => 'ok', 'bits' => $bits, 'tekst' => 'RSA-sleutel van ' . $bits . ' bits' );
+}
+
+/**
+ * FEATURE (v4.2): het echte bewijs uit de kopregels van een ontvangen mail.
+ * De ontvangende server (Gmail, Outlook, ...) schrijft in "Authentication-Results"
+ * of de DKIM-handtekening klopte. In "DKIM-Signature" staan het domein (d=) en
+ * de selector (s=). We bewaren alleen de uitkomst, nooit de kopregels zelf.
+ */
+function mijn_smtp_dkim_uit_koppen( $koppen, $domein ) {
+    $koppen = str_replace( "\r", '', (string) $koppen );
+    // Kopregels die over meerdere regels doorlopen weer aan elkaar plakken.
+    $koppen = preg_replace( "/\n[ \t]+/", ' ', $koppen );
+    $domein = strtolower( $domein );
+
+    $uitkomst = array( 'resultaat' => '', 'domein' => '', 'selector' => '', 'tijd' => current_time( 'timestamp' ) );
+
+    // De selector en het domein van de handtekening.
+    if ( preg_match_all( '/^DKIM-Signature:(.*)$/mi', $koppen, $handtekeningen ) ) {
+        foreach ( $handtekeningen[1] as $handtekening ) {
+            $d = preg_match( '/\bd=([^;\s]+)/i', $handtekening, $m ) ? strtolower( $m[1] ) : '';
+            $s = preg_match( '/\bs=([^;\s]+)/i', $handtekening, $m ) ? $m[1] : '';
+            if ( $d && ( $d === $domein || substr( $domein, -strlen( '.' . $d ) ) === '.' . $d ) ) {
+                $uitkomst['domein']   = $d;
+                $uitkomst['selector'] = $s;
+                break;
+            }
+            if ( ! $uitkomst['selector'] ) {
+                $uitkomst['domein']   = $d;
+                $uitkomst['selector'] = $s;
+            }
+        }
+    }
+
+    // Wat de ontvanger ervan vond.
+    $gevonden = array();
+    if ( preg_match_all( '/^(?:ARC-)?Authentication-Results:(.*)$/mi', $koppen, $resultaten ) ) {
+        foreach ( $resultaten[1] as $regel ) {
+            if ( preg_match_all( '/\bdkim=(pass|fail|neutral|none|policy|temperror|permerror)\b([^;]*)/i', $regel, $m, PREG_SET_ORDER ) ) {
+                foreach ( $m as $treffer ) {
+                    $d = preg_match( '/header\.(?:d|i)=@?([^\s;]+)/i', $treffer[2], $dm ) ? strtolower( $dm[1] ) : '';
+                    $gevonden[] = array( strtolower( $treffer[1] ), $d );
+                }
+            }
+        }
+    }
+    // Gmail toont bij "Origineel weergeven" ook een samenvatting: DKIM: 'PASS' met domein ...
+    if ( preg_match_all( "/DKIM:\s*'?(PASS|FAIL|NEUTRAL)'?\s+(?:met domein|with domain)\s+([^\s]+)/i", $koppen, $m, PREG_SET_ORDER ) ) {
+        foreach ( $m as $treffer ) {
+            $gevonden[] = array( strtolower( $treffer[1] ), strtolower( $treffer[2] ) );
+        }
+    }
+
+    foreach ( $gevonden as $treffer ) {
+        list( $resultaat, $d ) = $treffer;
+        $eigen = $d && ( $d === $domein || substr( $d, -strlen( '.' . $domein ) ) === '.' . $domein || substr( $domein, -strlen( '.' . $d ) ) === '.' . $d );
+        if ( 'pass' === $resultaat && $eigen ) {
+            $uitkomst['resultaat'] = 'pass';
+            $uitkomst['domein']    = $d;
+            return $uitkomst;
+        }
+        if ( $eigen || ! $d ) {
+            $uitkomst['resultaat'] = $resultaat;
+        }
+    }
+
+    // Wel ondertekend, maar met een ander domein (bijvoorbeeld dat van de hoster).
+    if ( ! $uitkomst['resultaat'] && $gevonden ) {
+        $uitkomst['resultaat'] = 'ander_domein';
+        $uitkomst['domein']    = $gevonden[0][1];
+    }
+    if ( ! $uitkomst['resultaat'] && ! $uitkomst['selector'] ) {
+        $uitkomst['resultaat'] = 'geen';
+    }
+
+    return $uitkomst;
+}
+
+/**
  * FEATURE (v3.2 - suggestie #11): best-effort SPF/DKIM-controle voor het ingestelde
  * afzenderdomein. Bewust GEEN automatische controle op elke pagina-load (DNS-lookups
  * kunnen traag of geblokkeerd zijn op sommige hosting) — alleen op handmatig verzoek
  * via een knop op de instellingenpagina, met 24 uur caching.
  */
 function mijn_smtp_dns_check( $domein, $methode, $forceer = false ) {
-    $cache_sleutel = 'mijn_smtp_dns_check_' . md5( $domein . '|' . $methode );
+    $eigen_selector = (string) get_option( 'mijn_smtp_dkim_selector', '' );
+    $cache_sleutel  = 'mijn_smtp_dns_check_' . md5( $domein . '|' . $methode . '|' . $eigen_selector . '|v42' );
 
     if ( ! $forceer ) {
         $gecached = get_transient( $cache_sleutel );
@@ -1587,7 +1813,7 @@ function mijn_smtp_dns_check( $domein, $methode, $forceer = false ) {
         return false;
     }
 
-    $resultaat = array( 'spf' => false, 'dkim' => false, 'dkim_selector' => '', 'tijd' => current_time( 'timestamp' ) );
+    $resultaat = array( 'spf' => false, 'dkim' => false, 'dkim_selector' => '', 'dkim_status' => 'niet_gevonden', 'dkim_uitleg' => '', 'dkim_gezocht' => 0, 'dmarc' => false, 'dmarc_beleid' => '', 'tijd' => current_time( 'timestamp' ) );
 
     $txt_records = @dns_get_record( $domein, DNS_TXT );
     if ( is_array( $txt_records ) ) {
@@ -1599,19 +1825,44 @@ function mijn_smtp_dns_check( $domein, $methode, $forceer = false ) {
         }
     }
 
-    // DKIM: best-effort op basis van bekende standaard-selectors per methode. Een
-    // negatief resultaat betekent niet per se een probleem (een eigen selector is ook mogelijk).
-    $selectoren = array(
-        'microsoft' => array( 'selector1', 'selector2' ),
-        'google'    => array( 'google' ),
-        'sendgrid'  => array( 's1', 's2' ),
-    );
-    if ( isset( $selectoren[ $methode ] ) ) {
-        foreach ( $selectoren[ $methode ] as $selector ) {
-            $dkim_records = @dns_get_record( $selector . '._domainkey.' . $domein, DNS_TXT );
-            if ( is_array( $dkim_records ) && ! empty( $dkim_records ) ) {
-                $resultaat['dkim'] = true;
-                $resultaat['dkim_selector'] = $selector;
+    // DKIM (v4.2): eerst een zelf ingevulde selector, dan een lange lijst van
+    // veelgebruikte selectors van allerlei aanbieders. Van elk gevonden record
+    // kijken we of de sleutel bruikbaar is.
+    $kandidaten = mijn_smtp_dkim_selectoren( $methode );
+    if ( '' !== $eigen_selector ) {
+        array_unshift( $kandidaten, $eigen_selector );
+        $kandidaten = array_values( array_unique( $kandidaten ) );
+    }
+    $resultaat['dkim_gezocht'] = count( $kandidaten );
+
+    foreach ( $kandidaten as $selector ) {
+        $dkim_records = @dns_get_record( $selector . '._domainkey.' . $domein, DNS_TXT );
+        if ( ! is_array( $dkim_records ) ) {
+            continue;
+        }
+        foreach ( $dkim_records as $record ) {
+            // Een lang record komt soms in stukjes terug; die plakken we aan elkaar.
+            $txt = isset( $record['entries'] ) && is_array( $record['entries'] ) ? implode( '', $record['entries'] ) : ( isset( $record['txt'] ) ? $record['txt'] : '' );
+            if ( stripos( $txt, 'p=' ) === false && stripos( $txt, 'v=DKIM1' ) === false ) {
+                continue;
+            }
+            $check = mijn_smtp_dkim_sleutel_check( $txt );
+            $resultaat['dkim_selector'] = $selector;
+            $resultaat['dkim_status']   = $check['status'];
+            $resultaat['dkim_uitleg']   = $check['tekst'];
+            $resultaat['dkim']          = 'ok' === $check['status'];
+            break 2;
+        }
+    }
+
+    // DMARC: het beleid voor mail die niet door SPF of DKIM komt.
+    $dmarc_records = @dns_get_record( '_dmarc.' . $domein, DNS_TXT );
+    if ( is_array( $dmarc_records ) ) {
+        foreach ( $dmarc_records as $record ) {
+            $txt = isset( $record['entries'] ) && is_array( $record['entries'] ) ? implode( '', $record['entries'] ) : ( isset( $record['txt'] ) ? $record['txt'] : '' );
+            if ( stripos( $txt, 'v=DMARC1' ) !== false ) {
+                $resultaat['dmarc']        = true;
+                $resultaat['dmarc_beleid'] = preg_match( '/\bp=\s*([a-z]+)/i', $txt, $m ) ? strtolower( $m[1] ) : '';
                 break;
             }
         }
