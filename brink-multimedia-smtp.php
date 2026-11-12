@@ -3,7 +3,7 @@
  * Plugin Name: Brink Multimedia SMTP
  * Plugin URI: https://www.brink-multimedia.nl
  * Description: Brink Multimedia SMTP Sender voor WordPress inclusief Microsoft-, Google- en SendGrid-koppeling, logging en SPF/DKIM/DMARC-controle voor elke mailaanbieder.
- * Version: 4.2.1
+ * Version: 4.3.0
  * Author: Brink Multimedia
  * Author URI: https://www.brink-multimedia.nl
  * Requires at least: 5.9
@@ -16,7 +16,63 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
-define( 'BRINK_SMTP_VERSION', '4.2.1' );
+define( 'BRINK_SMTP_VERSION', '4.3.0' );
+
+/**
+ * Klein inline SVG-icoon in plaats van een emoji (v4.3). Emoji's hangen af van het lettertype
+ * en van de site: veel sites zetten de emoji-scripts van WordPress uit, en dan verschijnt er
+ * een leeg vakje of een zwart-wit tekentje. Een SVG ziet er overal hetzelfde uit en volgt de
+ * tekstkleur (in de adminbalk dus ook de hoverkleur). Geeft al ontsnapte HTML terug; een
+ * onbekende naam geeft een lege string.
+ */
+function mijn_smtp_icoon( $naam ) {
+    $paden = array(
+        'mail'     => '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/>',
+        'ok'       => '<circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/>',
+        'fout'     => '<circle cx="12" cy="12" r="9"/><path d="m9 9 6 6m0-6-6 6"/>',
+        'let-op'   => '<path d="M12 3 2 20h20z"/><path d="M12 10v4m0 3v.01"/>',
+        'onbekend' => '<circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.6V14m0 3v.01"/>',
+        'stijgend' => '<path d="m3 17 6-6 4 4 8-8"/><path d="M15 7h6v6"/>',
+        'stop'     => '<path d="M8 3h8l5 5v8l-5 5H8l-5-5V8z"/><path d="M9 12h6"/>',
+        'signaal'  => '<path d="M5 12a7 7 0 0 1 14 0M8.5 12a3.5 3.5 0 0 1 7 0"/><path d="M12 12v8"/>',
+        'grafiek'  => '<path d="M4 20h16M7 16v-4m5 4V8m5 8v-6"/>',
+        'boek'     => '<path d="M4 19V5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z"/><path d="M8 7h7"/>',
+        'welkom'   => '<circle cx="12" cy="12" r="9"/><path d="M8 14s1.5 2 4 2 4-2 4-2M9 9v.01M15 9v.01"/>',
+    );
+    if ( ! isset( $paden[ $naam ] ) ) {
+        return '';
+    }
+    $kleuren = array(
+        'ok'       => 'var(--brink-success,#46b450)',
+        'fout'     => 'var(--brink-error,#d63638)',
+        'stop'     => 'var(--brink-error,#d63638)',
+        'signaal'  => 'var(--brink-error,#d63638)',
+        'let-op'   => '#996800',
+        'stijgend' => '#996800',
+        'onbekend' => '#646970',
+    );
+    $kleur = isset( $kleuren[ $naam ] ) ? $kleuren[ $naam ] : 'currentColor';
+
+    // Vulling en lijn staan óók in de inline style: een thema met bijvoorbeeld
+    // svg{fill:currentColor} wint van attributen, maar niet van een inline style.
+    return '<svg class="mijn-smtp-icoon" viewBox="0 0 24 24" fill="none" stroke="' . $kleur . '" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"'
+        . ' style="display:inline-block;width:1.15em;height:1.15em;margin:0 .3em 0 0;vertical-align:-.2em;overflow:visible;fill:none;stroke:' . $kleur . ';stroke-width:2">' . $paden[ $naam ] . '</svg>';
+}
+
+/**
+ * Gekleurd blokje voor de legenda van de grafiek (v4.3, vervangt de groene en rode emoji-vierkantjes).
+ * Alleen vaste soorten, zodat er nooit vrije CSS in de style kan komen.
+ */
+function mijn_smtp_legenda_blokje( $soort ) {
+    $kleuren = array(
+        'verzonden' => 'var(--brink-success, #46b450)',
+        'mislukt'   => 'var(--brink-error, #d63638)',
+    );
+    if ( ! isset( $kleuren[ $soort ] ) ) {
+        return '';
+    }
+    return '<span aria-hidden="true" style="display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:-1px;background:' . $kleuren[ $soort ] . '"></span>';
+}
 
 // Globale variabele om server communicatie op te vangen (alleen gevuld als debug-modus aan staat)
 global $brink_smtp_global_debug;
@@ -263,7 +319,7 @@ function mijn_smtp_admin_bar_snelkoppeling( $admin_bar ) {
     }
     $admin_bar->add_node( array(
         'id'    => 'mijn-smtp-testmail',
-        'title' => '✉️ Test SMTP',
+        'title' => mijn_smtp_icoon( 'mail' ) . 'Test SMTP',
         'href'  => wp_nonce_url( admin_url( 'admin-post.php?action=mijn_smtp_snelle_testmail' ), 'mijn_smtp_snelle_testmail' ),
         'meta'  => array( 'title' => 'Verstuur direct een testmail naar jezelf' ),
     ) );
@@ -314,9 +370,9 @@ function mijn_smtp_render_snelle_testmail_notice() {
     }
     delete_transient( $sleutel );
     if ( 'success' === $resultaat ) {
-        echo '<div class="notice notice-success is-dismissible"><p>✅ Testmail (via de adminbalk-snelkoppeling) succesvol verzonden naar je eigen e-mailadres.</p></div>';
+        echo '<div class="notice notice-success is-dismissible"><p>' . mijn_smtp_icoon( 'ok' ) . 'Testmail (via de adminbalk-snelkoppeling) succesvol verzonden naar je eigen e-mailadres.</p></div>';
     } else {
-        echo '<div class="notice notice-error is-dismissible"><p>❌ Testmail via de adminbalk-snelkoppeling is mislukt. Bekijk het logboek voor details.</p></div>';
+        echo '<div class="notice notice-error is-dismissible"><p>' . mijn_smtp_icoon( 'fout' ) . 'Testmail via de adminbalk-snelkoppeling is mislukt. Bekijk het logboek voor details.</p></div>';
     }
 }
 
@@ -338,9 +394,9 @@ function mijn_smtp_render_expiry_notice() {
         $days = floor( $diff / DAY_IN_SECONDS );
 
         if ( $days <= 30 && $days >= 0 ) {
-            echo "<div class='notice notice-warning'><p>⚠️ <strong>Brink Multimedia SMTP:</strong> Let op! Je Microsoft Client Secret verloopt over <strong>" . esc_html( $days ) . " dagen</strong>. Maak op tijd een nieuwe aan in Azure (en werk de datum hier bij).</p></div>";
+            echo "<div class='notice notice-warning'><p>" . mijn_smtp_icoon( 'let-op' ) . "<strong>Brink Multimedia SMTP:</strong> Let op! Je Microsoft Client Secret verloopt over <strong>" . esc_html( $days ) . " dagen</strong>. Maak op tijd een nieuwe aan in Azure (en werk de datum hier bij).</p></div>";
         } elseif ( $days < 0 ) {
-            echo "<div class='notice notice-error'><p>❌ <strong>Brink Multimedia SMTP:</strong> Je Microsoft Client Secret is <strong>verlopen</strong>! Mailverkeer is mogelijk onderbroken. Update dit direct.</p></div>";
+            echo "<div class='notice notice-error'><p>" . mijn_smtp_icoon( 'fout' ) . "<strong>Brink Multimedia SMTP:</strong> Je Microsoft Client Secret is <strong>verlopen</strong>! Mailverkeer is mogelijk onderbroken. Update dit direct.</p></div>";
         }
     }
 }
@@ -351,7 +407,7 @@ function mijn_smtp_render_expiry_notice() {
 function mijn_smtp_render_volume_notice() {
     $aantal = get_transient( 'mijn_smtp_volume_waarschuwing_actief' );
     if ( $aantal ) {
-        echo '<div class="notice notice-warning"><p>📈 <strong>Brink Multimedia SMTP:</strong> Er zijn vandaag al <strong>' . esc_html( $aantal ) . '</strong> e-mails verzonden — meer dan je ingestelde waarschuwingsdrempel. Controleer of dit klopt (mogelijk misbruik van een formulier of account).</p></div>';
+        echo '<div class="notice notice-warning"><p>' . mijn_smtp_icoon( 'stijgend' ) . '<strong>Brink Multimedia SMTP:</strong> Er zijn vandaag al <strong>' . esc_html( $aantal ) . '</strong> e-mails verzonden — meer dan je ingestelde waarschuwingsdrempel. Controleer of dit klopt (mogelijk misbruik van een formulier of account).</p></div>';
     }
 }
 
@@ -361,7 +417,7 @@ function mijn_smtp_render_volume_notice() {
 function mijn_smtp_render_rate_limit_notice() {
     $limiet = get_transient( 'mijn_smtp_rate_limit_actief' );
     if ( $limiet ) {
-        echo '<div class="notice notice-error"><p>🛑 <strong>Brink Multimedia SMTP:</strong> De verzendlimiet van <strong>' . esc_html( $limiet ) . ' e-mails per uur</strong> is bereikt. Extra e-mails worden tijdelijk geblokkeerd (niet alleen gelogd) totdat het volgende uur begint. Controleer het logboek — dit kan wijzen op misbruik.</p></div>';
+        echo '<div class="notice notice-error"><p>' . mijn_smtp_icoon( 'stop' ) . '<strong>Brink Multimedia SMTP:</strong> De verzendlimiet van <strong>' . esc_html( $limiet ) . ' e-mails per uur</strong> is bereikt. Extra e-mails worden tijdelijk geblokkeerd (niet alleen gelogd) totdat het volgende uur begint. Controleer het logboek — dit kan wijzen op misbruik.</p></div>';
     }
 }
 
@@ -371,7 +427,7 @@ function mijn_smtp_render_rate_limit_notice() {
 function mijn_smtp_render_server_onbereikbaar_notice() {
     $fouten = get_transient( 'mijn_smtp_server_onbereikbaar_waarschuwing' );
     if ( $fouten ) {
-        echo '<div class="notice notice-error"><p>📡 <strong>Brink Multimedia SMTP:</strong> De laatste <strong>' . esc_html( $fouten ) . '</strong> verzendpogingen zijn achter elkaar mislukt. Controleer je instellingen of de status van je mailserver/-provider.</p></div>';
+        echo '<div class="notice notice-error"><p>' . mijn_smtp_icoon( 'signaal' ) . '<strong>Brink Multimedia SMTP:</strong> De laatste <strong>' . esc_html( $fouten ) . '</strong> verzendpogingen zijn achter elkaar mislukt. Controleer je instellingen of de status van je mailserver/-provider.</p></div>';
     }
 }
 add_action( 'wp_mail_succeeded', 'mijn_smtp_reset_opeenvolgende_fouten' );
@@ -408,7 +464,7 @@ function mijn_smtp_render_conflict_notice() {
     $gevonden = mijn_smtp_detecteer_conflicterende_plugins();
     if ( ! empty( $gevonden ) ) {
         $meervoud = count( $gevonden ) === 1 ? 'is nog een andere SMTP-plugin actief' : 'zijn nog andere SMTP-plugins actief';
-        echo '<div class="notice notice-warning"><p>⚠️ <strong>Brink Multimedia SMTP:</strong> Er ' . esc_html( $meervoud ) . ' (' . esc_html( implode( ', ', $gevonden ) ) . '). Dit kan conflicteren met de mailinstellingen van deze plugin — overweeg er één te deactiveren.</p></div>';
+        echo '<div class="notice notice-warning"><p>' . mijn_smtp_icoon( 'let-op' ) . '<strong>Brink Multimedia SMTP:</strong> Er ' . esc_html( $meervoud ) . ' (' . esc_html( implode( ', ', $gevonden ) ) . '). Dit kan conflicteren met de mailinstellingen van deze plugin — overweeg er één te deactiveren.</p></div>';
     }
 }
 
@@ -697,7 +753,7 @@ function mijn_smtp_handle_oauth_callback() {
 function mijn_smtp_stuur_en_toon_testmail( $naar ) {
     $naar = sanitize_email( $naar );
     if ( empty( $naar ) ) {
-        echo '<div class="notice notice-error is-dismissible"><p>❌ Geen geldig e-mailadres om een testmail naartoe te sturen.</p></div>';
+        echo '<div class="notice notice-error is-dismissible"><p>' . mijn_smtp_icoon( 'fout' ) . 'Geen geldig e-mailadres om een testmail naartoe te sturen.</p></div>';
         return;
     }
 
@@ -716,15 +772,15 @@ function mijn_smtp_stuur_en_toon_testmail( $naar ) {
     remove_action( 'wp_mail_failed', $handler );
 
     if ( $verzonden ) {
-        echo '<div class="notice notice-success is-dismissible"><p>✅ Test e-mail succesvol verzonden naar <strong>' . esc_html( $naar ) . '</strong>!</p></div>';
+        echo '<div class="notice notice-success is-dismissible"><p>' . mijn_smtp_icoon( 'ok' ) . 'Test e-mail succesvol verzonden naar <strong>' . esc_html( $naar ) . '</strong>!</p></div>';
     } else {
         echo '<div class="notice notice-error is-dismissible" style="padding-bottom: 10px;">';
-        echo '<p>❌ <strong>Fout bij verzenden:</strong> ' . esc_html( $brink_smtp_live_error ?: 'Onbekende fout' ) . '</p>';
+        echo '<p>' . mijn_smtp_icoon( 'fout' ) . '<strong>Fout bij verzenden:</strong> ' . esc_html( $brink_smtp_live_error ?: 'Onbekende fout' ) . '</p>';
 
         $oauth_fout = get_transient( 'mijn_smtp_ms_token_error' ) ?: get_transient( 'mijn_smtp_google_token_error' );
         if ( $oauth_fout ) {
             echo '<div style="margin-top: 10px; padding: 10px; border-left: 4px solid var(--brink-error,#d63638); background: var(--brink-card-bg,#fff);">';
-            echo '<strong>⚠️ OAuth Token Fout (je mag niet inloggen):</strong><br>';
+            echo '<strong>' . mijn_smtp_icoon( 'let-op' ) . 'OAuth Token Fout (je mag niet inloggen):</strong><br>';
             echo '<code>' . esc_html( $oauth_fout ) . '</code>';
             echo '</div>';
         }
@@ -755,7 +811,7 @@ function mijn_smtp_instellingen_pagina() {
     if ( isset( $_POST['mijn_smtp_clear_log'] ) && current_user_can( 'manage_options' ) ) {
         check_admin_referer( 'mijn_smtp_clear_log_action', 'mijn_smtp_clear_log_nonce' );
         update_option( 'mijn_smtp_email_logs', array(), false );
-        echo '<div class="notice notice-success is-dismissible"><p>✅ Logboek is geleegd.</p></div>';
+        echo '<div class="notice notice-success is-dismissible"><p>' . mijn_smtp_icoon( 'ok' ) . 'Logboek is geleegd.</p></div>';
     }
 
     // --- SPF/DKIM-CONTROLE (suggestie #11, alleen op handmatig verzoek) ---
@@ -836,7 +892,7 @@ function mijn_smtp_instellingen_pagina() {
 
         <?php if ( empty( $opties ) ) : // Onboarding-welkomstblok (suggestie #39) ?>
             <div class="brink-smtp-card brink-smtp-card--accent" style="margin-bottom:20px;">
-                <h3 style="margin-top:0;">👋 Welkom bij Brink Multimedia SMTP</h3>
+                <h3 style="margin-top:0;"><?php echo mijn_smtp_icoon( 'welkom' ); ?>Welkom bij Brink Multimedia SMTP</h3>
                 <p>Zo ben je in drie stappen klaar:</p>
                 <ol>
                     <li>Kies hieronder je mailmethode (Standaard SMTP, Microsoft, Google of SendGrid).</li>
@@ -847,7 +903,7 @@ function mijn_smtp_instellingen_pagina() {
         <?php endif; ?>
 
         <div class="brink-smtp-card brink-smtp-card--accent" style="margin-bottom: 20px;">
-            <h3 style="margin-top: 0;">📊 Wekelijkse Statistieken</h3>
+            <h3 style="margin-top: 0;"><?php echo mijn_smtp_icoon( 'grafiek' ); ?>Wekelijkse Statistieken</h3>
             <p>Er zijn deze week <strong><?php echo esc_html( $huidige_teller ); ?></strong> e-mails verzonden via deze plugin.<br>
             <em>(Op basis van je gekozen rapport-interval ontvangt de beheerder hier een overzicht van, waarna deze teller wordt gereset).</em></p>
         </div>
@@ -855,7 +911,7 @@ function mijn_smtp_instellingen_pagina() {
         <div class="brink-smtp-card" style="margin-bottom: 20px;">
             <h3 style="margin-top:0;">Verzonden vs. mislukt (laatste 7 dagen)</h3>
             <?php echo mijn_smtp_render_dag_grafiek( mijn_smtp_verzamel_dagelijkse_stats( 7 ) ); ?>
-            <p style="font-size:12px; color: var(--brink-text-muted);">🟩 Verzonden &nbsp; 🟥 Mislukt</p>
+            <p style="font-size:12px; color: var(--brink-text-muted);"><?php echo mijn_smtp_legenda_blokje( 'verzonden' ); ?>Verzonden &nbsp; <?php echo mijn_smtp_legenda_blokje( 'mislukt' ); ?>Mislukt</p>
         </div>
 
         <div class="brink-smtp-card" style="margin-bottom: 20px;">
@@ -870,25 +926,25 @@ function mijn_smtp_instellingen_pagina() {
                 $dkim_bewijs   = ( is_array( $dkim_bewijs ) && isset( $dkim_bewijs['voor'] ) && $dkim_bewijs['voor'] === strtolower( $domein_voor_check ) ) ? $dkim_bewijs : array(); ?>
                 <?php if ( $dns_resultaat ) : ?>
                     <p>
-                        SPF voor <strong><?php echo esc_html( $domein_voor_check ); ?></strong>: <?php echo $dns_resultaat['spf'] ? '✅ gevonden' : '⚠️ geen SPF-record (v=spf1) gevonden'; ?><br>
+                        SPF voor <strong><?php echo esc_html( $domein_voor_check ); ?></strong>: <?php echo $dns_resultaat['spf'] ? mijn_smtp_icoon( 'ok' ) . 'gevonden' : mijn_smtp_icoon( 'let-op' ) . 'geen SPF-record (v=spf1) gevonden'; ?><br>
                         DKIM in de DNS: <?php
                         $dkim_status = isset( $dns_resultaat['dkim_status'] ) ? $dns_resultaat['dkim_status'] : ( $dns_resultaat['dkim'] ? 'ok' : 'niet_gevonden' );
                         if ( 'ok' === $dkim_status ) {
-                            echo '✅ gevonden en in orde (selector: <code>' . esc_html( $dns_resultaat['dkim_selector'] ) . '</code>' . ( ! empty( $dns_resultaat['dkim_uitleg'] ) ? ', ' . esc_html( $dns_resultaat['dkim_uitleg'] ) : '' ) . ')';
+                            echo mijn_smtp_icoon( 'ok' ) . 'gevonden en in orde (selector: <code>' . esc_html( $dns_resultaat['dkim_selector'] ) . '</code>' . ( ! empty( $dns_resultaat['dkim_uitleg'] ) ? ', ' . esc_html( $dns_resultaat['dkim_uitleg'] ) : '' ) . ')';
                         } elseif ( 'niet_gevonden' === $dkim_status ) {
-                            echo '❔ niet gevonden onder ' . (int) ( isset( $dns_resultaat['dkim_gezocht'] ) ? $dns_resultaat['dkim_gezocht'] : 0 ) . ' bekende selectors. Dat hoeft niet te betekenen dat DKIM ontbreekt: je aanbieder kan een eigen selector gebruiken. Vul hieronder de selector in, of plak de kopregels van een ontvangen mail.';
+                            echo mijn_smtp_icoon( 'onbekend' ) . 'niet gevonden onder ' . (int) ( isset( $dns_resultaat['dkim_gezocht'] ) ? $dns_resultaat['dkim_gezocht'] : 0 ) . ' bekende selectors. Dat hoeft niet te betekenen dat DKIM ontbreekt: je aanbieder kan een eigen selector gebruiken. Vul hieronder de selector in, of plak de kopregels van een ontvangen mail.';
                         } else {
-                            echo '❌ record gevonden (selector: <code>' . esc_html( $dns_resultaat['dkim_selector'] ) . '</code>), maar ' . esc_html( isset( $dns_resultaat['dkim_uitleg'] ) ? $dns_resultaat['dkim_uitleg'] : 'het is niet bruikbaar' );
+                            echo mijn_smtp_icoon( 'fout' ) . 'record gevonden (selector: <code>' . esc_html( $dns_resultaat['dkim_selector'] ) . '</code>), maar ' . esc_html( isset( $dns_resultaat['dkim_uitleg'] ) ? $dns_resultaat['dkim_uitleg'] : 'het is niet bruikbaar' );
                         } ?><br>
                         DMARC: <?php
                         if ( ! isset( $dns_resultaat['dmarc'] ) ) {
                             echo '–';
                         } elseif ( $dns_resultaat['dmarc'] && ! empty( $dns_resultaat['dmarc_fouten'] ) ) {
-                            echo '❌ gevonden, maar er zit een fout in: ' . esc_html( implode( '; ', $dns_resultaat['dmarc_fouten'] ) ) . '.';
+                            echo mijn_smtp_icoon( 'fout' ) . 'gevonden, maar er zit een fout in: ' . esc_html( implode( '; ', $dns_resultaat['dmarc_fouten'] ) ) . '.';
                         } elseif ( $dns_resultaat['dmarc'] ) {
-                            echo '✅ gevonden en in orde (beleid: <code>' . esc_html( $dns_resultaat['dmarc_beleid'] ? $dns_resultaat['dmarc_beleid'] : 'none' ) . '</code>)';
+                            echo mijn_smtp_icoon( 'ok' ) . 'gevonden en in orde (beleid: <code>' . esc_html( $dns_resultaat['dmarc_beleid'] ? $dns_resultaat['dmarc_beleid'] : 'none' ) . '</code>)';
                         } else {
-                            echo '⚠️ geen DMARC-record (_dmarc) gevonden';
+                            echo mijn_smtp_icoon( 'let-op' ) . 'geen DMARC-record (_dmarc) gevonden';
                         } ?>
                     </p>
                     <p class="description">DNS laatst gecontroleerd: <?php echo esc_html( wp_date( 'd-m-Y H:i', $dns_resultaat['tijd'] ) ); ?>.</p>
@@ -901,19 +957,19 @@ function mijn_smtp_instellingen_pagina() {
                     <?php
                     switch ( $dkim_bewijs['resultaat'] ) {
                         case 'pass':
-                            echo '✅ <strong>ja</strong>: de ontvanger keurde de handtekening goed (dkim=pass) voor <code>' . esc_html( $dkim_bewijs['domein'] ) . '</code>' . ( $dkim_bewijs['selector'] ? ', selector <code>' . esc_html( $dkim_bewijs['selector'] ) . '</code>' : '' ) . '.';
+                            echo mijn_smtp_icoon( 'ok' ) . '<strong>ja</strong>: de ontvanger keurde de handtekening goed (dkim=pass) voor <code>' . esc_html( $dkim_bewijs['domein'] ) . '</code>' . ( $dkim_bewijs['selector'] ? ', selector <code>' . esc_html( $dkim_bewijs['selector'] ) . '</code>' : '' ) . '.';
                             break;
                         case 'ander_domein':
-                            echo '⚠️ de mail is wel ondertekend, maar met het domein <code>' . esc_html( $dkim_bewijs['domein'] ) . '</code> en niet met je eigen domein. Vraag je aanbieder om DKIM voor <code>' . esc_html( $domein_voor_check ) . '</code> aan te zetten.';
+                            echo mijn_smtp_icoon( 'let-op' ) . 'de mail is wel ondertekend, maar met het domein <code>' . esc_html( $dkim_bewijs['domein'] ) . '</code> en niet met je eigen domein. Vraag je aanbieder om DKIM voor <code>' . esc_html( $domein_voor_check ) . '</code> aan te zetten.';
                             break;
                         case 'geen':
-                            echo '❌ <strong>nee</strong>: de mail heeft geen DKIM-handtekening. Zet DKIM aan bij je mailaanbieder.';
+                            echo mijn_smtp_icoon( 'fout' ) . '<strong>nee</strong>: de mail heeft geen DKIM-handtekening. Zet DKIM aan bij je mailaanbieder.';
                             break;
                         case '':
-                            echo '❔ er staat een handtekening in (selector <code>' . esc_html( $dkim_bewijs['selector'] ) . '</code>), maar geen oordeel van de ontvanger. Plak de kopregels zoals de ontvanger ze toont (met "Authentication-Results").';
+                            echo mijn_smtp_icoon( 'onbekend' ) . 'er staat een handtekening in (selector <code>' . esc_html( $dkim_bewijs['selector'] ) . '</code>), maar geen oordeel van de ontvanger. Plak de kopregels zoals de ontvanger ze toont (met "Authentication-Results").';
                             break;
                         default:
-                            echo '❌ <strong>nee</strong>: de ontvanger keurde de handtekening af (dkim=' . esc_html( $dkim_bewijs['resultaat'] ) . '). Controleer of de sleutel in de DNS dezelfde is als op de mailserver.';
+                            echo mijn_smtp_icoon( 'fout' ) . '<strong>nee</strong>: de ontvanger keurde de handtekening af (dkim=' . esc_html( $dkim_bewijs['resultaat'] ) . '). Controleer of de sleutel in de DNS dezelfde is als op de mailserver.';
                     } ?></p>
                 <?php endif; ?>
 
@@ -1075,7 +1131,7 @@ function mijn_smtp_instellingen_pagina() {
                 <h3>Microsoft Outlook (OAuth 2.0) API Gegevens</h3>
 
                 <details style="background: #f0f6fc; border: 1px solid #c3c4c7; padding: 10px 15px; margin-bottom: 20px; border-radius: 4px;">
-                    <summary style="font-weight: bold; cursor: pointer; color: #2271b1; outline: none;">📖 Handleiding: Hoe koppel je Microsoft Entra ID (Azure)?</summary>
+                    <summary style="font-weight: bold; cursor: pointer; color: #2271b1;"><?php echo mijn_smtp_icoon( 'boek' ); ?>Handleiding: Hoe koppel je Microsoft Entra ID (Azure)?</summary>
                     <div style="margin-top: 15px; font-size: 13px; line-height: 1.5;">
                         <ol style="margin-left: 20px; list-style-type: decimal;">
                             <li>Ga naar de <a href="https://entra.microsoft.com/" target="_blank">Microsoft Entra admin center</a> en log in als beheerder.</li>
@@ -1093,9 +1149,9 @@ function mijn_smtp_instellingen_pagina() {
                 </details>
 
                 <?php if ( isset( $_GET['oauth'] ) && $_GET['oauth'] === 'success' ) : ?>
-                    <div class="notice notice-success inline" style="margin-bottom:15px;"><p>✅ Succesvol gekoppeld!</p></div>
+                    <div class="notice notice-success inline" style="margin-bottom:15px;"><p><?php echo mijn_smtp_icoon( 'ok' ); ?>Succesvol gekoppeld!</p></div>
                 <?php elseif ( isset( $_GET['oauth'] ) && $_GET['oauth'] === 'failed' ) : ?>
-                    <div class="notice notice-error inline" style="margin-bottom:15px;"><p>❌ Koppelen mislukt. Controleer je gegevens en of de Redirect URI exact overeenkomt.</p></div>
+                    <div class="notice notice-error inline" style="margin-bottom:15px;"><p><?php echo mijn_smtp_icoon( 'fout' ); ?>Koppelen mislukt. Controleer je gegevens en of de Redirect URI exact overeenkomt.</p></div>
                 <?php endif; ?>
 
                 <table class="form-table">
@@ -1140,7 +1196,7 @@ function mijn_smtp_instellingen_pagina() {
                         </div>
                     <?php else: ?>
                         <div style="margin-top: 20px; padding: 15px; border-left: 4px solid var(--brink-success,#46b450); background: var(--brink-card-bg,#fff);">
-                            <span style="color: var(--brink-success,green); font-weight: bold; font-size: 16px;">✅ Succesvol verbonden met Microsoft</span>
+                            <span style="color: var(--brink-success,green); font-weight: bold; font-size: 16px;"><?php echo mijn_smtp_icoon( 'ok' ); ?>Succesvol verbonden met Microsoft</span>
                             <p>
                                 <a href="<?php echo esc_url( wp_nonce_url( admin_url( 'options-general.php?page=mijn-smtp-instellingen&disconnect_ms=1' ), 'mijn_smtp_disconnect_ms' ) ); ?>" style="color: var(--brink-error,#d63638);">Verbreek koppeling</a>
                             </p>
@@ -1156,7 +1212,7 @@ function mijn_smtp_instellingen_pagina() {
                 <h3>Google / Gmail (OAuth 2.0) API Gegevens</h3>
 
                 <details style="background: #f0f6fc; border: 1px solid #c3c4c7; padding: 10px 15px; margin-bottom: 20px; border-radius: 4px;">
-                    <summary style="font-weight: bold; cursor: pointer; color: #2271b1; outline: none;">📖 Handleiding: Hoe koppel je een Google-account?</summary>
+                    <summary style="font-weight: bold; cursor: pointer; color: #2271b1;"><?php echo mijn_smtp_icoon( 'boek' ); ?>Handleiding: Hoe koppel je een Google-account?</summary>
                     <div style="margin-top: 15px; font-size: 13px; line-height: 1.5;">
                         <ol style="margin-left: 20px; list-style-type: decimal;">
                             <li>Ga naar de <a href="https://console.cloud.google.com/apis/credentials" target="_blank">Google Cloud Console – Credentials</a> (maak zo nodig eerst een project aan).</li>
@@ -1202,7 +1258,7 @@ function mijn_smtp_instellingen_pagina() {
                         </div>
                     <?php else: ?>
                         <div style="margin-top: 20px; padding: 15px; border-left: 4px solid var(--brink-success,#46b450); background: var(--brink-card-bg,#fff);">
-                            <span style="color: var(--brink-success,green); font-weight: bold; font-size: 16px;">✅ Succesvol verbonden met Google</span>
+                            <span style="color: var(--brink-success,green); font-weight: bold; font-size: 16px;"><?php echo mijn_smtp_icoon( 'ok' ); ?>Succesvol verbonden met Google</span>
                             <p>
                                 <a href="<?php echo esc_url( wp_nonce_url( admin_url( 'options-general.php?page=mijn-smtp-instellingen&disconnect_google=1' ), 'mijn_smtp_disconnect_google' ) ); ?>" style="color: var(--brink-error,#d63638);">Verbreek koppeling</a>
                             </p>
@@ -1299,9 +1355,9 @@ function mijn_smtp_instellingen_pagina() {
                                 <td><?php echo esc_html( $log['subject'] ); ?></td>
                                 <td>
                                     <?php if ( $log['status'] === 'success' ): ?>
-                                        <span style="color: var(--brink-success,#46b450); font-weight: bold;">✅ Verzonden</span>
+                                        <span style="color: var(--brink-success,#46b450); font-weight: bold;"><?php echo mijn_smtp_icoon( 'ok' ); ?>Verzonden</span>
                                     <?php else: ?>
-                                        <span style="color: var(--brink-error,#d63638); font-weight: bold;">❌ Mislukt</span>
+                                        <span style="color: var(--brink-error,#d63638); font-weight: bold;"><?php echo mijn_smtp_icoon( 'fout' ); ?>Mislukt</span>
                                         <br><small style="color: var(--brink-error,#d63638);"><?php echo esc_html( $log['error'] ); ?></small>
 
                                         <?php if ( ! empty( $log['server_log'] ) ) : ?>
